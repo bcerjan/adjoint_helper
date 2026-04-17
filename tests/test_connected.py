@@ -26,8 +26,6 @@ from adjoint_helper.nlopt_optimization import run_nlopt_optimization
 This test demonstrates most features of the package -- it optimizes a "floating"
 grating coupler for transmission into a waveguide. It forces all the pieces of
 the coupler to be connected to at least one of the specified edges.
-
-For 'adam' optimization
 """
 
 resolution = 20

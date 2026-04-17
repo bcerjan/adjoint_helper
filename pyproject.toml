@@ -8,7 +8,7 @@ version = "0.0.1"
 authors = [
   { name="Ben Cerjan", email="bcerjan@gmail.com" },
 ]
-description = "A set of tools for assisting with adjoint-based optimization for MEEP."
+description = "A set of tools for assisting with adjoint-based optimization for electromagnetics."
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -20,6 +20,27 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICEN[CS]E*"]
 
 
+dependencies = [
+  "numpy",
+  "matplotlib",
+]
+
+[project.opional-dependencies]
+meep = [
+  "meep",
+]
+
+optimization = [
+  "nlopt",
+  "optax",
+]
+
+all = [
+  "meep",
+  "nlopt",
+  "optax",
+]
+
 [project.urls]
-Homepage = "https://github.com/bcerjan/meep_adjoint_helper"
-Issues = "https://github.com/bcerjan/meep_adjoint_helper/issues"
+Homepage = "https://github.com/bcerjan/adjoint_helper"
+Issues = "https://github.com/bcerjan/adjoint_helper/issues"

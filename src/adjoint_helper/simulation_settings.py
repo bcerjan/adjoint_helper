@@ -101,13 +101,11 @@ class SimulationSettings(ABC):
     def create_opt(self, optimization: OptimizationSettings) -> mpa.OptimizationProblem:
         pass
 
-    @abstractmethod
     def apply_symmetry(self, weights: npt.NDArray[np.float_]) -> npt.NDArray[np.float_]:
-        pass
+        return weights
 
-    @abstractmethod
     def border_masks(self, optimization: OptimizationSettings) -> list[MaskRegion]:
-        pass
+        return []
 
     def nlopt_objective_f(
         self,
