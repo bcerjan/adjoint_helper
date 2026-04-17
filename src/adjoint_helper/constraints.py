@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import numpy as np
+import numpy.typing as npt
 import meep.adjoint as mpa  # type: ignore
 from autograd import numpy as npa, tensor_jacobian_product, grad  # type: ignore
 from typing import Tuple
@@ -25,10 +26,10 @@ from adjoint_helper.optimization_settings import OptimizationSettings
 
 
 def filter_and_project(
-    weights: np.ndarray[(int), np.dtype[np.float_]],
+    weights: npt.NDArray[np.float_],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> np.ndarray[(int), np.dtype[np.float_]]:
+) -> npt.NDArray[np.float_]:
     """A differentiable function to filter and project the design weights.
 
     Args:
@@ -77,11 +78,11 @@ def filter_and_project(
 
 
 def line_width_and_spacing_constraint(
-    weights: np.ndarray[(int), np.dtype[np.float_]],
-    gradient: np.ndarray[(int), np.dtype[np.float_]],
+    weights: npt.NDArray[np.float_],
+    gradient: npt.NDArray[np.float_],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> Tuple[float, np.ndarray[(int), np.dtype[np.float_]]]:
+) -> Tuple[float, npt.NDArray[np.float_]]:
     """Constraint function for the minimum line width and spacing.
 
     Args:
@@ -103,8 +104,8 @@ def line_width_and_spacing_constraint(
     # gradient[:, 0] = -a1
 
     def filter_func(
-        a: np.ndarray[(int), np.dtype[np.float_]],
-    ) -> np.ndarray[(int), np.dtype[np.float_]]:
+        a: npt.NDArray[np.float_],
+    ) -> npt.NDArray[np.float_]:
         return mpa.conic_filter(  # type: ignore
             a.reshape(settings.nx_design, settings.ny_design),
             optimization.filter_radius,
@@ -142,11 +143,11 @@ def line_width_and_spacing_constraint(
 
 
 def connectivity_constraint(
-    weights: np.ndarray[(int), np.dtype[np.float_]],
-    # gradient: np.ndarray,
+    weights: npt.NDArray[np.float_],
+    # gradient: npt.NDArray[np.float_],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> Tuple[float, np.ndarray[(int), np.dtype[np.float_]]]:
+) -> Tuple[float, npt.NDArray[np.float_]]:
     """Applies connectivity constraint
 
     Args:
@@ -215,6 +216,6 @@ def connectivity_constraint(
         weights, settings, optimization, aggGrad.flatten()
     )
 
-    # gradient[:] = temp.flatten()
+    # gradient[:] = temp.flatten()  # You might want this (and un-comment gradient in the signature)
     optimization.connectivity.append(f0)  # type: ignore
     return f0, temp.flatten()  # type: ignore

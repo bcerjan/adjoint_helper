@@ -1,6 +1,6 @@
 """
 Meep Adjoint Helper
-Copyright (C) 2025 Ben Cerjan
+Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -66,11 +66,6 @@ def obj_func(
         f"obj. func.: {obj}, "
     )
 
-    if optimization.maximize:
-        data: float = -obj  # we want this to be as small as possible to maximize
-    else:
-        data: float = obj
-
     # Apply penalties:
     if optimization.apply_connectivity:
         connectivity, g = connectivity_constraint(
@@ -81,7 +76,7 @@ def obj_func(
 
         if connectivity > 0:
             grad[:] = grad[:] + g[:] * optimization.penalty_weight
-            data += connectivity * optimization.penalty_weight
+            obj += connectivity * optimization.penalty_weight
 
     if optimization.apply_linewidth:
         fabrication: float
@@ -94,16 +89,15 @@ def obj_func(
 
         if fabrication > 0:
             grad[:] = grad[:] + g[:] * optimization.penalty_weight
-            data += fabrication * optimization.penalty_weight  # type: ignore
+            obj += fabrication * optimization.penalty_weight  # type: ignore
 
     optimization.obj.append(np.real(obj))  # type: ignore
-    optimization.data.append(data)  # type: ignore
     optimization.weights.append(weights.copy())
 
-    return data, grad  # type: ignore
+    return obj, grad  # type: ignore
 
 
-def run_optimization(
+def run_adam_optimization(
     settings: SimulationSettings, optimization: OptimizationSettings
 ) -> np.ndarray[(int), np.dtype[np.float_]]:
     """
@@ -123,41 +117,26 @@ def run_optimization(
 
     optimal_design_weights = np.zeros_like(weights)
 
+    history_fpath = settings.data_dir + settings.history_fname
+
+    optimization.use_damping = True
+
+    # Handle restarting:
+    last_index = optimization.last_completed_index
+    biases = optimization.sigmoid_biases
+
+    if last_index >= 0:
+        weights = optimization.weights[-1]
+
     learning_rate = 0.75
 
     optimizer = optax.adam(learning_rate=learning_rate)  # type: ignore
     opt_state = optimizer.init(weights)  # type: ignore
 
-    history_fpath = settings.data_dir + settings.history_fname
+    for idx, sigmoid_bias in enumerate(biases[last_index + 1 :], start=last_index + 1):
+        max_eval = optimization.max_evals[idx]
 
-    optimization.use_damping = True
-
-    for sigmoid_bias, max_eval in zip(
-        optimization.sigmoid_biases,
-        optimization.max_evals,
-    ):
-        optimization.sigmoid_bias = sigmoid_bias
-        if sigmoid_bias >= optimization.sigmoid_bias_threshold:
-            optimization.use_epsavg = True
-            # eps_avg and damping are (somewhat) mutually exclusive, see:
-            # https://github.com/NanoComp/photonics-opt-testbed/issues/31#issuecomment-1370041394
-            optimization.use_damping = False
-        else:
-            optimization.use_epsavg = False
-            optimization.use_damping = True
-
-        if (
-            sigmoid_bias > optimization.connectivity_sigmoid_threshold
-            and optimization.do_connectivity
-        ):
-            optimization.apply_connectivity = True
-        else:
-            optimization.apply_connectivity = False
-
-        if sigmoid_bias > optimization.line_width_sigmoid_threshold:
-            optimization.apply_linewidth = True
-        else:
-            optimization.apply_linewidth = False
+        optimization.apply_settings(sigmoid_bias)
 
         opt = settings.create_opt(optimization)
 
@@ -172,12 +151,14 @@ def run_optimization(
             for mask in masks:
                 weights[mask.locations.flatten()] = mask.value
 
-            save_output(weights, settings, optimization, sigmoid_bias, history_fpath)
-
             # outputs
             print(f"\nstep = {i + 1}")
             print(f"\tobjective = {val:.4e}")
             print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
+
+        save_output(weights, settings, optimization, sigmoid_bias, history_fpath)
+
+        optimization.last_completed_index = idx
 
     optimal_design_weights = filter_and_project(
         weights[:],

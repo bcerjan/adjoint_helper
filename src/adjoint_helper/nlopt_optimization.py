@@ -48,6 +48,17 @@ def _connectivity_cons(
     settings: SimulationSettings,
     optimization: OptimizationSettings,
 ) -> float:
+    """_summary_
+
+    Args:
+        weights (npt.NDArray[np.float_]): _description_
+        grad (npt.NDArray[np.float_]): _description_
+        settings (SimulationSettings): _description_
+        optimization (OptimizationSettings): _description_
+
+    Returns:
+        float: _description_
+    """
     connectivity, grad[:] = connectivity_constraint(weights, settings, optimization)
 
     return connectivity
@@ -55,7 +66,17 @@ def _connectivity_cons(
 
 def run_nlopt_optimization(
     settings: SimulationSettings, optimization: OptimizationSettings
-) -> np.ndarray[(int), np.dtype[np.float_]]:
+) -> npt.NDArray[np.float_]:
+    """_summary_
+
+    Args:
+        settings (SimulationSettings): Simulation settings for this simulation
+        optimization (OptimizationSettings): Optimization settings
+
+    Returns:
+        npt.NDArray[np.float_]: Optimal weights after the optimization
+    """
+
     lb = np.zeros((settings.total_n(),))
     ub = np.ones((settings.total_n(),))
     weights = np.ones(settings.total_n()) * 0.5
@@ -67,35 +88,28 @@ def run_nlopt_optimization(
 
     optimization.use_damping = True
 
-    for i, sigmoid_bias in enumerate(optimization.sigmoid_biases):
-        optimization.sigmoid_bias = sigmoid_bias
+    # Handle restarting:
+    last_index = optimization.last_completed_index
+    biases = optimization.sigmoid_biases
+
+    if last_index >= 0:
+        weights = optimization.weights[-1]
+
+    for i, sigmoid_bias in enumerate(biases[last_index + 1 :], start=last_index + 1):
+        optimization.apply_settings(sigmoid_bias)
         solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n())  # type: ignore
         solver.set_lower_bounds(lb)  # type: ignore
         solver.set_upper_bounds(ub)  # type: ignore
 
         solver.set_maxeval(optimization.max_evals[i])  # type: ignore
 
-        if sigmoid_bias >= optimization.sigmoid_bias_threshold:
-            optimization.use_epsavg = True
-            # eps_avg and damping are (somewhat) mutually exclusive, see:
-            # https://github.com/NanoComp/photonics-opt-testbed/issues/31#issuecomment-1370041394
-            optimization.use_damping = False
-        else:
-            optimization.use_epsavg = False
-            optimization.use_damping = True
-
-        if sigmoid_bias > optimization.line_width_sigmoid_threshold:
-            optimization.apply_linewidth = True
+        if optimization.apply_linewidth:
             solver.add_inequality_constraint(  # type: ignore
                 lambda x, g: _linewidth_cons(x, g, settings, optimization),  # type: ignore
-                optimization.line_width_tol,
+                optimization.nlopt_line_width_tol,
             )
 
-        if (
-            sigmoid_bias > optimization.connectivity_sigmoid_threshold
-            and optimization.do_connectivity
-        ):
-            optimization.apply_connectivity = True
+        if optimization.apply_connectivity:
             solver.add_inequality_constraint(  # type: ignore
                 lambda x, g: _connectivity_cons(x, g, settings, optimization),  # type: ignore
                 optimization.connectivity_tolerance,
@@ -112,6 +126,7 @@ def run_nlopt_optimization(
         weights[:] = solver.optimize(weights)  # type: ignore
 
         save_output(weights, settings, optimization, sigmoid_bias, history_fpath)
+        optimization.last_completed_index = i
 
     optimal_design_weights = filter_and_project(
         weights[:],

@@ -31,14 +31,20 @@ class OptimizationHistory:
         self.settings = settings
         self.optimization = optimization
 
-    def save_history(self, fname: str) -> None:
-        """Convenience function to save the history to file. Will overwrite."""
-        with open(fname, "wb") as file:
+    def save_history(self, fpath: str) -> None:
+        """Convenience function to save the history to file. Will overwrite with impunity."""
+        with open(fpath, "w+b") as file:
             pickle.dump(self, file)
 
 
-def load_history(fname: str) -> OptimizationHistory:
+def load_history(fpath: str) -> OptimizationHistory | None:
     """Convenience method to load the history from file."""
-    with open(fname, "rb") as file:
-        history = pickle.load(file)
-    return history
+
+    try:
+        with open(fpath, "rb") as file:
+            return pickle.load(file)
+    except FileNotFoundError:
+        return None
+    except (pickle.UnpicklingError, EOFError, AttributeError):
+        print(f"Warning: File at {fpath} is corrupt. Returning None.")
+        return None

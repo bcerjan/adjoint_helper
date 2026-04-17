@@ -42,3 +42,7 @@ ipython_config.py
 
 # PyPI configuration file
 .pypirc
+
+
+# Test output
+tests/output/

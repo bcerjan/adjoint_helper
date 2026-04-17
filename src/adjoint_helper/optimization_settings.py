@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import numpy as np
+import numpy.typing as npt
 import meep.adjoint as mpa  # type: ignore
 
 
@@ -28,7 +29,7 @@ class OptimizationSettings:
 
     obj: list[np.float_]
     data: list[np.float_]
-    weights: list[np.ndarray[(int), np.dtype[np.float_]]]
+    weights: list[npt.NDArray[np.float_]]
     grad: list[np.float_]
     connectivity: list[int]
     do_connectivity: bool
@@ -44,7 +45,6 @@ class OptimizationSettings:
     connectivity_sigmoid_threshold: float
     apply_connectivity: bool
     do_connectivity: bool
-    line_width_tol: float
     line_width_sigmoid_threshold: float
     apply_linewidth: bool
     max_evals: list[int]
@@ -54,32 +54,32 @@ class OptimizationSettings:
     maximum_runtime: float
     minimum_runtime: float
     decay_by: float
-    penalty_weight: float
-    maximize: bool
     use_smoothed_projection: bool
+    last_completed_index: int
+
+    nlopt_line_width_tol: float
+    penalty_weight: float
 
     def __init__(
         self,
-        filter_radius: float = 0.05,
-        sigmoid_bias: float = 8,
-        sigmoid_bias_sim: float = 8,
+        minimum_size: float = 0.05,
         sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
         sigmoid_threshold: float = 0.5,  # Eta
         sigmoid_erosion: float = 0.65,  # Eta_e
         sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40],
         connectivity_tolerance: float = 1e-3,
         connectivity_sigmoid_threshold: float = 16,
-        line_width_tol: float = 1e-4,  # Tolerance for nlopt constraint
         line_width_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
         max_evals: list[int] | int = 10,  # if int, all biases get same number
         maximum_runtime: float = 200,
         minimum_runtime: float = 0,
         decay_by: float = 1e-6,
-        penalty_weight: float = 0.1,  # only used for non-nlopt
-        maximize: bool = False,
         use_smoothed_projection: bool = False,
         do_connectivity: bool = False,
+        nlopt_line_width_tol: float = 1e-4,  # Tolerance for nlopt constraint
+        penalty_weight: float = 0.1,  # only used for non-nlopt
     ):
+        """"""
         evals: list[int] = []
 
         if type(max_evals) is list and len(sigmoid_biases) != len(max_evals):
@@ -95,20 +95,20 @@ class OptimizationSettings:
         self.weights = []
         self.grad = []
         self.connectivity = []
+        self.last_completed_index = -1
 
         self.filter_radius = mpa.get_conic_radius_from_eta_e(  # type: ignore
-            filter_radius, sigmoid_erosion
+            minimum_size, sigmoid_erosion
         )
 
-        self.sigmoid_bias = sigmoid_bias
+        self.sigmoid_bias = sigmoid_biases[0]
         self.sigmoid_biases = sigmoid_biases
-        self.sigmoid_bias_sim = sigmoid_bias_sim
         self.sigmoid_bias_threshold = sigmoid_bias_threshold
         self.sigmoid_threshold = sigmoid_threshold
         self.sigmoid_erosion = sigmoid_erosion
         self.sigmoid_dilation = 1 - sigmoid_erosion
         self.connectivity_tolerance = connectivity_tolerance
-        self.line_width_tol = line_width_tol
+        self.nlopt_line_width_tol = nlopt_line_width_tol
         self.max_evals = evals
         self.maximum_runtime = maximum_runtime
         self.minimum_runtime = minimum_runtime
@@ -119,23 +119,36 @@ class OptimizationSettings:
         self.connectivity_sigmoid_threshold = connectivity_sigmoid_threshold
         self.line_width_sigmoid_threshold = line_width_sigmoid_threshold
         self.penalty_weight = penalty_weight
-        self.maximize = maximize
         self.use_smoothed_projection = use_smoothed_projection
 
-    # def load_if_available(
-    #     fpath: str | None = None,
-    # ) -> Tuple[Tuple[float, int], npt.NDArray[np.float_]]:
-    #     """
-    #     Function to check if a suitable optimization history exists at the
-    #     specified file path and to load it, or create appropriate values
-    #     if one does not yet exist.
+    def apply_settings(self, current_sigmoid_bias: float) -> None:
+        """Updates the optimization object to tell it to use/not use eps_avg,
+        damping, connectivity constraint, and linewidth constraint. Also updates
+        the internally stored `sigmoid_bias`
 
-    #     Args:
-    #       fpath: String, filepath to .pkl file, optional. If not provided, entire
-    #       optimization will be run. If provided but is not valid for current
-    #       simulation settings, will be ignored.
-    #     Returns:
-    #       ( (sigmoid_biases, max_evals), weights )
-    #     """
+        Args:
+            current_sigmoid_bias (float): Current bias of the optimization
+        """
+        self.sigmoid_bias = current_sigmoid_bias
 
-    #     pass
+        if current_sigmoid_bias >= self.sigmoid_bias_threshold:
+            self.use_epsavg = True
+            # eps_avg and damping are (somewhat) mutually exclusive, see:
+            # https://github.com/NanoComp/photonics-opt-testbed/issues/31#issuecomment-1370041394
+            self.use_damping = False
+        else:
+            self.use_epsavg = False
+            self.use_damping = True
+
+        if (
+            current_sigmoid_bias > self.connectivity_sigmoid_threshold
+            and self.do_connectivity
+        ):
+            self.apply_connectivity = True
+        else:
+            self.apply_connectivity = False
+
+        if current_sigmoid_bias > self.line_width_sigmoid_threshold:
+            self.apply_linewidth = True
+        else:
+            self.apply_linewidth = False

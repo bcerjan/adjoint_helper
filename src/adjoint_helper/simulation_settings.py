@@ -43,6 +43,7 @@ class SimulationSettings(ABC):
     designX: float
     designY: float
     baseline_optimization_value: float
+    needs_baseline: bool
     enforce_symmetry: bool
     history_fname: str
     data_dir: str
@@ -87,6 +88,7 @@ class SimulationSettings(ABC):
         self.data_dir = data_dir
         self.connected_sides = connected_sides
         self.baseline_optimization_value = -np.inf
+        self.needs_baseline = True
 
     def total_n(self) -> int:
         return self.nx_design * self.ny_design
@@ -107,16 +109,18 @@ class SimulationSettings(ABC):
     def border_masks(self, optimization: OptimizationSettings) -> list[MaskRegion]:
         pass
 
-    # Default optimization function for nlopt calling.
-    # Can be customized if your mpa objective function has more returns
-    # For simple cases (single freq. single mpa objective), this should be sufficient
-    # Needs to be a minimization objective
     def nlopt_objective_f(
         self,
         weights: np.ndarray[(int), np.dtype[np.float_]],
         grad: np.ndarray[(int), np.dtype[np.float_]],
         optimization: OptimizationSettings,
     ) -> float:
+        """
+        Default optimization function for nlopt calling.
+        Can be customized if your `mpa` objective function has more returns.
+        For simple cases (single freq. single `mpa` objective), this should be sufficient
+        Needs to be a minimization objective
+        """
         from adjoint_helper.constraints import filter_and_project
         from autograd import tensor_jacobian_product  # type: ignore
 
