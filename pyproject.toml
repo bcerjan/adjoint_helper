@@ -26,18 +26,8 @@ dependencies = [
 ]
 
 [project.opional-dependencies]
-meep = [
-  "meep",
-]
 
-optimization = [
-  "nlopt",
-  "optax",
-]
-
-all = [
-  "meep",
-  "nlopt",
+optax = [
   "optax",
 ]
 

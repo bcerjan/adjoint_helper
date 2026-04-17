@@ -14,7 +14,7 @@
 
 ## Installation
 
-Because this package relies on complex scientific libraries like **MEEP**, the recommended way to install `adjoint_helper` is via **Conda**.
+Because this package relies on **MEEP** (at present), the recommended way to install `adjoint_helper` is via **Conda**.
 
 ### 1. Create a Conda Environment (Recommended)
 
@@ -25,19 +25,22 @@ First, create an environment with the necessary simulation backends:
 conda create -n adjoint_env -c conda-forge meep nlopt matplotlib numpy
 conda activate adjoint_env
 ```
-
+(nlopt is optional if you only want to use `optax` methods)
 
 ### 2. Install adjoint_helper
 Once your environment is set up, you can install the package:
 
-Via Pip (with Extras)
-If you have already installed the heavy dependencies via Conda, use the "extras" to ensure everything is linked correctly:
+Via Pip (with Extras):
 ```bash
+# Without any other solvers
 pip install adjoint_helper
+
+# With optax
+pip install adjoint_helper[optax]
 ```
 
 ---
-### Quick Start
+## Quick Start
 The first step is to define a custom `SimulationSettings` class and define 
 `create_geometry()` and `create_opt()` methods for it. From there, running an
 optimization is as simple as:
