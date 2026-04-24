@@ -61,9 +61,9 @@ from your_custom_settings import YourCustomSettings
 from adjoint_helper.optax_optimization import OptaxOptimizationSettings
 
 settings = YourCustomSettings() # possibly with args here if needed
-optimization = OptaxOptimizationSettings() # the defualts work best for adam optimization
+optimization = OptaxOptimizationSettings() # the defualts are sensible, uses `adam`
 
-optimization.optimize()
+optimization.optimize(settings)
 ```
 
 There is an extended example in the `tests` directory that shows a more complicated

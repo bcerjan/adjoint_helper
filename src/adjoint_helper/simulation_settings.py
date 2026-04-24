@@ -25,6 +25,7 @@ from adjoint_helper.mask_region import MaskRegion
 from typing import Callable, Any
 
 
+# NEEDS TESTING TO VERIFY THESE ARE CORRECT
 class Edge(Enum):
     BOTTOM = 0
     LEFT = 1
@@ -59,7 +60,7 @@ class SimulationSettings(ABC):
     enforce_symmetry: bool
     history_fname: str
     data_dir: str
-    connected_sides: list[int]
+    connected_sides: list[Edge]
 
     def __init__(
         self,
@@ -72,7 +73,7 @@ class SimulationSettings(ABC):
         designY: float,
         history_fname: str,
         data_dir: str,
-        connected_sides: list[int] = [],
+        connected_sides: list[Edge] = [],
         enforce_symmetry: bool = True,
     ):
         self.obj = []
