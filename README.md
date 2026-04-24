@@ -44,8 +44,8 @@ pip install adjoint_helper
 pip install adjoint_helper[optax]
 
 # With AdointDiffusion
-pip install adjoint_helper[diffusion]
 pip install torch torchvision # possibly with --index-url=XXXXX, see below
+pip install adjoint_helper[diffusion]
 ```
 If you are running with `AdjointDiffusion` you also need to install pytorch
 following the guidelines [here](https://pytorch.org/get-started/locally/) if
@@ -58,13 +58,12 @@ optimization is as simple as:
 
 ```python
 from your_custom_settings import YourCustomSettings
-from adjoint_helper.optimization_settings import OptimizationSettings
-from adjoint_helper.adam_optimization import run_adam_optimization
+from adjoint_helper.optax_optimization import OptaxOptimizationSettings
 
 settings = YourCustomSettings() # possibly with args here if needed
-optimization = OptimizationSettings() # the defualts work best for adam optimization
+optimization = OptaxOptimizationSettings() # the defualts work best for adam optimization
 
-run_adam_optimization(settings, optimization)
+optimization.optimize()
 ```
 
 There is an extended example in the `tests` directory that shows a more complicated
