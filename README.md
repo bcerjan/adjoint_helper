@@ -22,10 +22,15 @@ First, create an environment with the necessary simulation backends:
 
 ```bash
 # Create environment with MEEP and optimization tools
-conda create -n adjoint_env -c conda-forge meep nlopt matplotlib numpy
+conda create -n adjoint_env python=3.13 -c conda-forge pymeep nlopt
 conda activate adjoint_env
+
+# Use if you want parallel meep
+conda create -n adjoint_env_parallel python=3.13 -c conda-forge pymeep=*=mpi_mpich_* nlopt
+conda activate adjoint_env_parallel
 ```
-(nlopt is optional if you only want to use `optax` methods)
+(meep requires python < 3.14 currently.
+nlopt is optional if you only want to use `optax` methods)
 
 ### 2. Install adjoint_helper
 Once your environment is set up, you can install the package:
@@ -37,8 +42,14 @@ pip install adjoint_helper
 
 # With optax
 pip install adjoint_helper[optax]
-```
 
+# With AdointDiffusion
+pip install adjoint_helper[diffusion]
+pip install torch torchvision # possibly with --index-url=XXXXX, see below
+```
+If you are running with `AdjointDiffusion` you also need to install pytorch
+following the guidelines [here](https://pytorch.org/get-started/locally/) if
+you want to use a GPU to accelerate it.
 ---
 ## Quick Start
 The first step is to define a custom `SimulationSettings` class and define 

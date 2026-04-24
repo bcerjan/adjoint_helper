@@ -23,12 +23,20 @@ license-files = ["LICEN[CS]E*"]
 dependencies = [
   "numpy",
   "matplotlib",
+  "autograd",
 ]
 
 [project.opional-dependencies]
 
 optax = [
   "optax",
+]
+
+diffusion = [
+  "pillow",
+  "scikit-image",
+  "blobfile",
+  "mpi4py",
 ]
 
 [project.urls]
