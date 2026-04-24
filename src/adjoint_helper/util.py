@@ -87,7 +87,7 @@ def get_total_box_flux(fluxes: list[mp.DftFlux]) -> float:
 
 
 def save_output(
-    weights: npt.NDArray[np.float_],
+    weights: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
@@ -99,7 +99,7 @@ def save_output(
     at the given path
 
     :param weights: Weights for the design region(s)
-    :type weights: npt.NDArray[np.float_]
+    :type weights: npt.NDArray[np.float64]
     :param settings: SimulationSettings object that contains the information
     :type settings: SimulationSettings
     :param optimization: OptimizationSettings for this optimization run
@@ -171,7 +171,7 @@ def save_fom_history(
 
 
 def binarize_weights(
-    weights: npt.NDArray[np.float_],
+    weights: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
 ) -> None:
@@ -180,7 +180,7 @@ def binarize_weights(
     to np.inf, so be sure to reset it afterwards if it should be something else.
 
     :param weights: Current weights to be binarized
-    :type weights: npt.NDArray[np.float_]
+    :type weights: npt.NDArray[np.float64]
     :param settings: Simulation Settings for these weights
     :type settings: SimulationSettings
     :param optimization: Optimization Settings for these weights

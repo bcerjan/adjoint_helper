@@ -18,18 +18,25 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import numpy.typing as npt
-import meep.adjoint as mpa  # type: ignore
+from adjoint_helper.vendors.meep.filters import (
+    conic_filter,  # type: ignore
+    constraint_solid,  # type: ignore
+    constraint_void,  # type: ignore
+    tanh_projection,
+    smoothed_projection,  # type: ignore
+)
 from autograd import numpy as npa, tensor_jacobian_product, grad  # type: ignore
 from typing import Tuple
 from adjoint_helper.simulation_settings import SimulationSettings
 from adjoint_helper.optimization_settings import OptimizationSettings
+from adjoint_helper.vendors.meep.connectivity import constraint_connectivity
 
 
 def filter_and_project(
-    weights: npt.NDArray[np.float_],
+    weights: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> npt.NDArray[np.float_]:
+) -> npt.NDArray[np.float64]:
     """A differentiable function to filter and project the design weights.
 
     Args:
@@ -49,8 +56,8 @@ def filter_and_project(
     if settings.enforce_symmetry:
         weights = settings.apply_symmetry(weights)  # type: ignore
 
-    weights_filtered = mpa.conic_filter(  # type: ignore
-        weights,
+    weights_filtered = conic_filter(  # type: ignore
+        weights,  # type: ignore
         optimization.filter_radius,
         settings.designX,
         settings.designY,
@@ -59,7 +66,7 @@ def filter_and_project(
 
     if optimization.use_epsavg:
         if optimization.use_smoothed_projection:
-            weights_projected = mpa.smoothed_projection(  # type: ignore
+            weights_projected = smoothed_projection(  # type: ignore
                 weights_filtered,
                 optimization.sigmoid_bias,
                 optimization.sigmoid_threshold,
@@ -68,7 +75,7 @@ def filter_and_project(
         else:
             return weights_filtered.flatten()  # type: ignore
     else:
-        weights_projected = mpa.tanh_projection(  # type: ignore
+        weights_projected = tanh_projection(  # type: ignore
             weights_filtered,
             optimization.sigmoid_bias,
             optimization.sigmoid_threshold,
@@ -78,11 +85,11 @@ def filter_and_project(
 
 
 def line_width_and_spacing_constraint(
-    weights: npt.NDArray[np.float_],
-    gradient: npt.NDArray[np.float_],
+    weights: npt.NDArray[np.float64],
+    gradient: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> Tuple[float, npt.NDArray[np.float_]]:
+) -> Tuple[float, npt.NDArray[np.float64]]:
     """Constraint function for the minimum line width and spacing.
 
     Args:
@@ -104,9 +111,9 @@ def line_width_and_spacing_constraint(
     # gradient[:, 0] = -a1
 
     def filter_func(
-        a: npt.NDArray[np.float_],
-    ) -> npt.NDArray[np.float_]:
-        return mpa.conic_filter(  # type: ignore
+        a: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        return conic_filter(  # type: ignore
             a.reshape(settings.nx_design, settings.ny_design),
             optimization.filter_radius,
             settings.designX,
@@ -115,19 +122,19 @@ def line_width_and_spacing_constraint(
         )
 
     def threshold_func(
-        a: np.ndarray[(int), np.dtype[np.float_]],
-    ) -> np.ndarray[(int), np.dtype[np.float_]]:
-        return mpa.tanh_projection(  # type: ignore
+        a: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.float64]:
+        return tanh_projection(  # type: ignore
             a, optimization.sigmoid_bias, optimization.sigmoid_threshold
         )
 
-    def M1(a: np.ndarray[(int), np.dtype[np.float_]]) -> float:
-        return mpa.constraint_solid(  # type: ignore
+    def M1(a: npt.NDArray[np.float64]) -> float:
+        return constraint_solid(  # type: ignore
             a, c0, optimization.sigmoid_erosion, filter_func, threshold_func, 1
         )
 
-    def M2(a: np.ndarray[(int), np.dtype[np.float_]]) -> float:
-        return mpa.constraint_void(  # type: ignore
+    def M2(a: npt.NDArray[np.float64]) -> float:
+        return constraint_void(  # type: ignore
             a, c0, optimization.sigmoid_dilation, filter_func, threshold_func, 1
         )
 
@@ -143,11 +150,11 @@ def line_width_and_spacing_constraint(
 
 
 def connectivity_constraint(
-    weights: npt.NDArray[np.float_],
-    # gradient: npt.NDArray[np.float_],
+    weights: npt.NDArray[np.float64],
+    # gradient: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
-) -> Tuple[float, npt.NDArray[np.float_]]:
+) -> Tuple[float, npt.NDArray[np.float64]]:
     """Applies connectivity constraint
 
     Args:
@@ -182,7 +189,7 @@ def connectivity_constraint(
     # for i in range(0,4):
     for i in settings.connected_sides:
         rot = npa.rot90(proj, i).flatten()  # type: ignore
-        T, _, dJ_du = mpa.constraint_connectivity(  # type: ignore
+        T, _, dJ_du = constraint_connectivity(  # type: ignore
             rot,  # type: ignore
             settings.nx_design,
             1,
@@ -205,7 +212,7 @@ def connectivity_constraint(
     # This is copied from the mpa.constraint_connectivity code as we need the
     # FOM for our assembled temperature, not raw temp from any rotation or
     # combination of rotations
-    def heat_func(x: np.ndarray[(int), np.dtype[np.float_]]) -> float:
+    def heat_func(x: npt.NDArray[np.float64]) -> float:
         return npa.sum(x**p) ** (1 / p) / thresh  # type: ignore
 
     f0 = heat_func(aggT) - 1  # type: ignore

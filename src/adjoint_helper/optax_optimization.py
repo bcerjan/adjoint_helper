@@ -18,154 +18,205 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import numpy.typing as npt
-import meep.adjoint as mpa  # pyright: ignore[reportMissingTypeStubs]
-import optax  # pyright: ignore[reportMissingTypeStubs]
+import optax  # type: ignore
 from typing import Tuple
 from adjoint_helper.optimization_settings import OptimizationSettings
-from adjoint_helper.simulation_settings import SimulationSettings
+from adjoint_helper.simulation_settings import SimulationSettings, Optimization_Func
 from adjoint_helper.util import save_output
-
-# from pathlib import Path
 
 from adjoint_helper.constraints import (
     filter_and_project,
     connectivity_constraint,
-    line_width_and_spacing_constraint,  # pyright: ignore[reportUnknownVariableType]
-    tensor_jacobian_product,  # pyright: ignore[reportUnknownVariableType]
+    line_width_and_spacing_constraint,  # type: ignore
+    tensor_jacobian_product,  # type: ignore
 )
 
 
-def obj_func(
-    weights: npt.NDArray[np.float_],
-    opt: mpa.OptimizationProblem,
-    settings: SimulationSettings,
-    optimization: OptimizationSettings,
-) -> Tuple[float, npt.NDArray[np.float_]]:
-    """Constraint function for the epigraph formulation.
-
-    Args:
-      weights: 1D array containing design weights.
-      opt: Meep Adjoint Optimization Problem
-      settings: SimulationSettings containing the geometrical parameters
-      optimization: OptimizationSettings containing optimization parameters
+class OptaxOptimizationSettings(OptimizationSettings):
+    """Subclass of `OptimizationSettings`, specialized to work with the
+    `optax` backend.
     """
 
-    obj_val, grad = opt([filter_and_project(weights, settings, optimization)])  # type: ignore
+    connectivity_penalty: float
+    linewidth_penalty: float
+    optmizer: optax.GradientTransformationExtraArgs
 
-    obj: float = obj_val[0]  # type: ignore
+    def __init__(
+        self,
+        minimum_size: float = 0.05,
+        sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
+        sigmoid_threshold: float = 0.5,  # Eta
+        sigmoid_erosion: float = 0.65,  # Eta_e
+        sigmoid_bias_init: float = 4,
+        sigmoid_bias_scale: float = 1.2,
+        connectivity_sigmoid_threshold: float = 16,
+        linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
+        total_evals: int = 40,
+        maximum_runtime: float = 200,
+        minimum_runtime: float = 0,
+        decay_by: float = 1e-6,
+        use_smoothed_projection: bool = False,
+        do_connectivity: bool = False,
+        connectivity_penalty: float = 0.2,
+        linewidth_penalty: float = 0.2,
+        optmizer: optax.GradientTransformationExtraArgs = optax.adam(learning_rate=0.2),
+    ):
+        self.connectivity_penalty = connectivity_penalty
+        self.linewidth_penalty = linewidth_penalty
+        self.optmizer = optmizer
 
-    grad[:] = tensor_jacobian_product(filter_and_project, 0)(
-        weights,
-        settings,
-        optimization,
-        grad,
-    )
+        sigmoid_biases = [
+            sigmoid_bias_init * sigmoid_bias_scale**i for i in range(total_evals)
+        ]
 
-    print(
-        f"iteration: {len(optimization.data)}, sigmoid_bias: {optimization.sigmoid_bias}, "
-        f"obj. func.: {obj}, "
-    )
+        max_evals = np.ones(total_evals, dtype=np.int32).tolist()
 
-    # Apply penalties:
-    if optimization.apply_connectivity:
-        connectivity, g = connectivity_constraint(
-            weights=weights,
-            settings=settings,
-            optimization=optimization,
+        super().__init__(
+            minimum_size=minimum_size,
+            sigmoid_bias_threshold=sigmoid_bias_threshold,
+            sigmoid_threshold=sigmoid_threshold,
+            sigmoid_erosion=sigmoid_erosion,
+            sigmoid_biases=sigmoid_biases,
+            connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
+            linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
+            max_evals=max_evals,
+            maximum_runtime=maximum_runtime,
+            minimum_runtime=minimum_runtime,
+            decay_by=decay_by,
+            use_smoothed_projection=use_smoothed_projection,
+            do_connectivity=do_connectivity,
         )
 
-        if connectivity > 0:
-            grad[:] = grad[:] + g[:] * optimization.penalty_weight
-            obj += connectivity * optimization.penalty_weight
+    def obj_func(
+        self,
+        weights: npt.NDArray[np.float64],
+        opt: Optimization_Func,
+        settings: SimulationSettings,
+    ) -> Tuple[float, npt.NDArray[np.float64]]:
+        """Constraint function for the epigraph formulation.
 
-    if optimization.apply_linewidth:
-        fabrication: float
-        fabrication, g = line_width_and_spacing_constraint(  # type: ignore
-            weights=weights,
-            gradient=grad,
-            settings=settings,
-            optimization=optimization,
-        )  # type: ignore
+        Args:
+        weights: 1D array containing design weights.
+        opt: Meep Adjoint Optimization Problem
+        settings: SimulationSettings containing the geometrical parameters
+        optimization: OptimizationSettings containing optimization parameters
+        """
 
-        if fabrication > 0:
-            grad[:] = grad[:] + g[:] * optimization.penalty_weight
-            obj += fabrication * optimization.penalty_weight  # type: ignore
+        obj_val, grad = opt([filter_and_project(weights, settings, self)])  # type: ignore
 
-    optimization.obj.append(np.real(obj))  # type: ignore
-    optimization.weights.append(weights.copy())
+        obj: float = obj_val[0]  # type: ignore
 
-    return obj, grad  # type: ignore
+        grad[:] = tensor_jacobian_product(filter_and_project, 0)(
+            weights,
+            settings,
+            self,
+            grad,
+        )
 
+        print(
+            f"iteration: {len(self.data)}, sigmoid_bias: {self.sigmoid_bias}, "
+            f"obj. func.: {obj}, "
+        )
 
-def run_adam_optimization(
-    settings: SimulationSettings, optimization: OptimizationSettings
-) -> np.ndarray[(int), np.dtype[np.float_]]:
-    """
-    Runs the optimization and stores results. Returns the (projected) optimal
-    weights for external stuff if desired
-    """
-    masks = settings.border_masks(optimization)
+        # Apply penalties:
+        if self.apply_connectivity:
+            connectivity, g = connectivity_constraint(
+                weights=weights,
+                settings=settings,
+                optimization=self,
+            )
 
-    num_weights = settings.total_n()
+            if connectivity > 0:
+                grad[:] = grad[:] + g[:] * self.connectivity_penalty
+                obj += connectivity * self.connectivity_penalty
 
-    # Initial design weights (arbitrary constant value).
-    weights = np.ones((num_weights,)) * 0.5
-    # weights = np.random.rand(num_weights)
+        if self.apply_linewidth:
+            fabrication: float
+            fabrication, g = line_width_and_spacing_constraint(  # type: ignore
+                weights=weights,
+                gradient=grad,
+                settings=settings,
+                optimization=self,
+            )  # type: ignore
 
-    for mask in masks:
-        weights[mask.locations.flatten()] = mask.value
+            if fabrication > 0:
+                grad[:] = grad[:] + g[:] * self.connectivity_penalty
+                obj += fabrication * self.connectivity_penalty  # type: ignore
 
-    optimal_design_weights = np.zeros_like(weights)
+        self.obj.append(np.real(obj))  # type: ignore
+        self.weights.append(weights.copy())
 
-    history_fpath = settings.data_dir + settings.history_fname
+        return obj, grad  # type: ignore
 
-    optimization.use_damping = True
+    def optimize(self, settings: SimulationSettings) -> npt.NDArray[np.float64]:
+        """
+        Runs the optimization and stores results. Returns the (projected) optimal
+        weights for external stuff if desired
+        """
+        masks = settings.border_masks(self)
 
-    # Handle restarting:
-    last_index = optimization.last_completed_index
-    biases = optimization.sigmoid_biases
+        num_weights = settings.total_n()
 
-    if last_index >= 0:
-        weights = optimization.weights[-1]
+        # Initial design weights (arbitrary constant value).
+        weights = np.ones((num_weights,)) * 0.5
+        # weights = np.random.rand(num_weights)
 
-    learning_rate = 0.75
+        for mask in masks:
+            weights[mask.locations.flatten()] = mask.value
 
-    optimizer = optax.adam(learning_rate=learning_rate)  # type: ignore
-    opt_state = optimizer.init(weights)  # type: ignore
+        optimal_design_weights = np.zeros_like(weights)
 
-    for idx, sigmoid_bias in enumerate(biases[last_index + 1 :], start=last_index + 1):
-        max_eval = optimization.max_evals[idx]
+        history_fpath = settings.data_dir + settings.history_fname
 
-        optimization.apply_settings(sigmoid_bias)
+        self.use_damping = True
 
-        opt = settings.create_opt(optimization)
+        # Handle restarting:
+        last_index = self.last_completed_index
+        biases = self.sigmoid_biases
 
-        for i in range(max_eval):
-            val, grad = obj_func(weights, opt, settings, optimization)
+        if last_index >= 0:
+            weights = self.weights[-1]
 
-            updates, opt_state = optimizer.update(grad, opt_state, weights)  # type: ignore
+        learning_rate = 0.75
 
-            weights[:] = optax.apply_updates(weights, updates)  # type: ignore
+        optimizer = optax.adam(learning_rate=learning_rate)  # type: ignore
+        opt_state = optimizer.init(weights)  # type: ignore
 
-            weights[:] = np.clip(weights, 0.0, 1.0)
-            for mask in masks:
-                weights[mask.locations.flatten()] = mask.value
+        for idx, sigmoid_bias in enumerate(
+            biases[last_index + 1 :], start=last_index + 1
+        ):
+            max_eval = self.max_evals[idx]
 
-            # outputs
-            print(f"\nstep = {i + 1}")
-            print(f"\tobjective = {val:.4e}")
-            print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
+            self.apply_settings(sigmoid_bias)
 
-        save_output(weights, settings, optimization, sigmoid_bias, history_fpath)
+            opt = settings.create_opt(self)
 
-        optimization.last_completed_index = idx
+            for i in range(max_eval):
+                val, grad = self.obj_func(weights, opt, settings)
 
-    optimal_design_weights = filter_and_project(
-        weights[:],
-        settings,
-        optimization,
-    )
+                updates, opt_state = optimizer.update(grad, opt_state, weights)  # type: ignore
 
-    save_output(weights, settings, optimization, 0, history_fpath, binarize=True)
+                weights[:] = optax.apply_updates(weights, updates)  # type: ignore
 
-    return optimal_design_weights
+                weights[:] = np.clip(weights, 0.0, 1.0)
+                for mask in masks:
+                    weights[mask.locations.flatten()] = mask.value
+
+                # outputs
+                print(f"\nstep = {i + 1}")
+                print(f"\tobjective = {val:.4e}")
+                print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
+
+            save_output(weights, settings, self, sigmoid_bias, history_fpath)
+
+            self.last_completed_index = idx
+
+        optimal_design_weights = filter_and_project(
+            weights[:],
+            settings,
+            self,
+        )
+
+        save_output(weights, settings, self, 0, history_fpath, binarize=True)
+
+        return optimal_design_weights

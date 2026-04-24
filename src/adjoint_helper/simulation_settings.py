@@ -19,10 +19,22 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from abc import ABC, abstractmethod
 import numpy as np
 import numpy.typing as npt
-import meep as mp  # type: ignore
-import meep.adjoint as mpa  # type: ignore
+from enum import Enum
 from adjoint_helper.optimization_settings import OptimizationSettings
 from adjoint_helper.mask_region import MaskRegion
+from typing import Callable, Any
+
+
+class Edge(Enum):
+    BOTTOM = 0
+    LEFT = 1
+    TOP = 2
+    RIGHT = 3
+
+
+Optimization_Func = Callable[
+    [npt.NDArray[np.float64]], tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
+]
 
 
 class SimulationSettings(ABC):
@@ -94,50 +106,19 @@ class SimulationSettings(ABC):
         return self.nx_design * self.ny_design
 
     @abstractmethod
-    def create_geometry(self) -> list[mp.GeometricObject]:
+    def create_geometry(self) -> list[Any]:  # possibly make a generic?
         pass
 
     @abstractmethod
-    def create_opt(self, optimization: OptimizationSettings) -> mpa.OptimizationProblem:
+    def create_opt(
+        self, optimization: OptimizationSettings
+    ) -> Any:  # possibly make a generic?
         pass
 
-    def apply_symmetry(self, weights: npt.NDArray[np.float_]) -> npt.NDArray[np.float_]:
+    def apply_symmetry(
+        self, weights: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
         return weights
 
     def border_masks(self, optimization: OptimizationSettings) -> list[MaskRegion]:
         return []
-
-    def nlopt_objective_f(
-        self,
-        weights: np.ndarray[(int), np.dtype[np.float_]],
-        grad: np.ndarray[(int), np.dtype[np.float_]],
-        optimization: OptimizationSettings,
-    ) -> float:
-        """
-        Default optimization function for nlopt calling.
-        Can be customized if your `mpa` objective function has more returns.
-        For simple cases (single freq. single `mpa` objective), this should be sufficient
-        Needs to be a minimization objective
-        """
-        from adjoint_helper.constraints import filter_and_project
-        from autograd import tensor_jacobian_product  # type: ignore
-
-        opt = self.create_opt(optimization)
-
-        f0, dJ_du = opt([filter_and_project(weights, self, optimization)])  # type: ignore
-
-        grad[:] = tensor_jacobian_product(filter_and_project, 0)(
-            weights,
-            self,
-            optimization,
-            dJ_du,
-        )
-
-        optimization.obj.append(np.real(f0))  # type: ignore
-        optimization.weights.append(weights.copy())
-        optimization.data.append(f0)  # type: ignore
-
-        print(f"Iteration: {len(optimization.weights)}, objective: {f0[0]:.4e}\n")
-        print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
-
-        return f0[0]  # type: ignore

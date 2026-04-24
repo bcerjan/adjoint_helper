@@ -39,7 +39,7 @@ class OptimizationHistory:
 
 def load_history(fpath: str) -> OptimizationHistory | None:
     """Convenience method to load the history from file."""
-
+    print(f"Loading: {fpath}")
     try:
         with open(fpath, "rb") as file:
             return pickle.load(file)

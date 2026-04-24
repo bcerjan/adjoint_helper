@@ -30,7 +30,7 @@ from adjoint_helper.constraints import filter_and_project
 
 
 def imshow_animation(
-    frameData: npt.NDArray[np.float_], cmap: str | Colormap = "binary"
+    frameData: npt.NDArray[np.float64], cmap: str | Colormap = "binary"
 ) -> animation.FuncAnimation:
     """
     Plots an animation based on the supplied framedata using imshow. Assumes
