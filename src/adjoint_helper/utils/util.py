@@ -16,74 +16,13 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import meep as mp  # type: ignore
 import numpy as np
 import numpy.typing as npt
 import matplotlib.pyplot as plt
-from adjoint_helper.optimization_settings import OptimizationSettings
-from adjoint_helper.optimization_history import OptimizationHistory
-from adjoint_helper.simulation_settings import SimulationSettings
-from adjoint_helper.constraints import filter_and_project
-
-
-def add_flux_box(
-    size: mp.Vector3,
-    center: mp.Vector3 = mp.Vector3(),
-) -> list[mp.FluxRegion]:
-    """
-    Adds 6 flux regions to create a box around the center point with the given
-    size. Specifies the weight parameter on each assuming we care about flux
-    leaving the box (and not entering)
-    """
-
-    out: list[mp.FluxRegion] = []
-
-    top = mp.FluxRegion(
-        center=center + mp.Vector3(0, 0, size.z / 2),
-        size=mp.Vector3(size.x, size.y, 0),
-    )
-
-    bot = mp.FluxRegion(
-        center=center - mp.Vector3(0, 0, size.z / 2),
-        size=mp.Vector3(size.x, size.y, 0),
-        weight=-1,
-    )
-
-    x_r = mp.FluxRegion(
-        center=center + mp.Vector3(size.x / 2, 0, 0),
-        size=mp.Vector3(0, size.y, size.z),
-    )
-
-    x_l = mp.FluxRegion(
-        center=center + mp.Vector3(-size.x / 2, 0, 0),
-        size=mp.Vector3(0, size.y, size.z),
-        weight=-1,
-    )
-
-    y_b = mp.FluxRegion(
-        center=center + mp.Vector3(0, size.y / 2, 0),
-        size=mp.Vector3(size.x, 0, size.z),
-    )
-
-    y_f = mp.FluxRegion(
-        center=center + mp.Vector3(0, -size.y / 2, 0),
-        size=mp.Vector3(size.x, 0, size.z),
-        weight=-1,
-    )
-
-    out.extend([top, bot, x_r, x_l, y_b, y_f])
-
-    return out
-
-
-def get_total_box_flux(fluxes: list[mp.DftFlux]) -> float:
-    flux: float = 0
-
-    for f in fluxes:
-        temp = mp.get_fluxes(f)  # type: ignore
-        flux += temp[0]  # TODO: check!
-
-    return flux
+from pathlib import Path
+from ..core.base_settings import OptimizationSettings, SimulationSettings
+from .optimization_history import OptimizationHistory
+from ..core.constraints import filter_and_project
 
 
 def save_output(
@@ -91,7 +30,7 @@ def save_output(
     settings: SimulationSettings,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
-    history_fpath: str,
+    history_fpath: str | Path,
     binarize: bool = False,
 ) -> None:
     """
@@ -115,6 +54,9 @@ def save_output(
     """
     # Save the unmapped weights and a bitmap image of the design weights
 
+    if isinstance(history_fpath, str):
+        history_fpath = Path(history_fpath).resolve()
+
     if binarize:
         binarize_weights(weights, settings, optimization)
 
@@ -132,42 +74,38 @@ def save_output(
         alpha=1.0,
     )
     ax.set_axis_off()
-    if mp.am_master():
-        fig.savefig(  # type: ignore
-            settings.data_dir
-            + f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}.png",
-            dpi=150,
-            bbox_inches="tight",
-        )
-        # Save the final (unmapped) design as a 2D array in CSV format
-        fname = (
-            f"unmapped_design_weights_beta{sigmoid_bias}.csv"
-            if not binarize
-            else "binarized_design_weights.csv"
-        )
-        np.savetxt(
-            settings.data_dir + fname,
-            weights[:].reshape(settings.nx_design, settings.ny_design),
-            fmt="%4.2f",
-            delimiter=",",
-        )
 
-        hist = OptimizationHistory(settings=settings, optimization=optimization)
-        hist.save_history(history_fpath)
+    fig.savefig(  # type: ignore
+        settings.data_dir
+        / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}.png",
+        dpi=150,
+        bbox_inches="tight",
+    )
+    # Save the final (unmapped) design as a 2D array in CSV format
+    fname = (
+        f"unmapped_design_weights_beta{sigmoid_bias}.csv"
+        if not binarize
+        else "binarized_design_weights.csv"
+    )
+    np.savetxt(
+        settings.data_dir / fname,
+        weights[:].reshape(settings.nx_design, settings.ny_design),
+        fmt="%4.2f",
+        delimiter=",",
+    )
+
+    hist = OptimizationHistory(settings=settings, optimization=optimization)
+    hist.save_history(history_fpath)
 
 
-def save_fom_history(
-    optimization: OptimizationSettings,
-    history_fpath: str,
-) -> None:
-    if mp.am_master():
-        plt.figure()  # type: ignore
-        plt.plot(optimization.data, "o-")  # type: ignore
-        plt.yscale("log")  # type: ignore
-        plt.grid(True)  # type: ignore
-        plt.xlabel("Iteration")  # type: ignore
-        plt.ylabel("FOM")  # type: ignore
-        plt.savefig(history_fpath + "FOM.png")  # type: ignore
+def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
+    plt.figure()  # type: ignore
+    plt.plot(optimization.data, "o-")  # type: ignore
+    plt.yscale("log")  # type: ignore
+    plt.grid(True)  # type: ignore
+    plt.xlabel("Iteration")  # type: ignore
+    plt.ylabel("FOM")  # type: ignore
+    plt.savefig(history_fpath + "FOM.png")  # type: ignore
 
 
 def binarize_weights(

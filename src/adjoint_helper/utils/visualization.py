@@ -24,9 +24,8 @@ import meep as mp  # type: ignore
 from matplotlib.colors import Colormap
 from matplotlib.pyplot import Artist  # type: ignore
 
-from adjoint_helper.optimization_settings import OptimizationSettings
-from adjoint_helper.simulation_settings import SimulationSettings
-from adjoint_helper.constraints import filter_and_project
+from ..core.base_settings import OptimizationSettings, SimulationSettings
+from ..core.constraints import filter_and_project
 
 
 def imshow_animation(

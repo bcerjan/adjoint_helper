@@ -16,22 +16,31 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from adjoint_helper.simulation_settings import SimulationSettings
-from adjoint_helper.optimization_settings import OptimizationSettings
+from ..core.base_settings import OptimizationSettings, PhysicsObjective, ObjectiveReturn
+from ..core.base_settings import SimulationSettings as BaseSimulationSettings
+from ..core.simulation_settings import SimulationSettings
 import numpy as np
 import numpy.typing as npt
-from adjoint_helper.constraints import (
+from ..core.constraints import (
     line_width_and_spacing_constraint,
     connectivity_constraint,
     filter_and_project,
+    tensor_jacobian_product,  # type: ignore
 )
-from adjoint_helper.util import save_output
+from ..core.objective_factory import get_physics_objective
+from ..utils.util import save_output
 import nlopt  # type: ignore
 
 
 class NloptOptimizationSettings(OptimizationSettings):
     """Subclass of `OptimizationSettings`, specialized to work with the
     `nlopt` backend.
+
+    Generally only good for single-objective / single design region optimizations.
+    If you can convert your multi-objective FOM into a single one, this might work
+    for you, otherwise consider using `DiffusionOptimizationSettings` or
+    `NloptEpigraphOptimizationSettings` which handle multi-objectives that
+    are not inherently differentiable better.
     """
 
     linewidth_tol: float
@@ -84,7 +93,7 @@ class NloptOptimizationSettings(OptimizationSettings):
         settings: SimulationSettings,
     ) -> float:
         spacing, grad[:] = line_width_and_spacing_constraint(  # type: ignore
-            weights=weights, gradient=grad, settings=settings, optimization=self
+            weights=weights, settings=settings, optimization=self
         )
 
         return spacing  # type: ignore
@@ -120,21 +129,15 @@ class NloptOptimizationSettings(OptimizationSettings):
         Default optimization function for nlopt calling.
         Can be customized if your `mpa` objective function has more returns.
         For simple cases (single freq. single `mpa` objective), this should be sufficient
+
         Needs to be a minimization objective
+
+        Updates gradient in-place
         """
-        from adjoint_helper.constraints import filter_and_project
-        from autograd import tensor_jacobian_product  # type: ignore
 
-        opt = settings.create_opt(self)
+        opt = settings.get_objective(self)
 
-        f0, dJ_du = opt([filter_and_project(weights, self, self)])  # type: ignore
-
-        grad[:] = tensor_jacobian_product(filter_and_project, 0)(
-            weights,
-            self,
-            self,
-            dJ_du,
-        )
+        f0, grad[:] = opt(weights)  # type: ignore
 
         self.obj.append(np.real(f0))  # type: ignore
         self.weights.append(weights.copy())
@@ -145,7 +148,7 @@ class NloptOptimizationSettings(OptimizationSettings):
 
         return f0[0]  # type: ignore
 
-    def optimize(self, settings: SimulationSettings) -> npt.NDArray[np.float64]:
+    def optimize(self, settings: BaseSimulationSettings) -> npt.NDArray[np.float64]:
         """_summary_
 
         Args:
@@ -156,14 +159,14 @@ class NloptOptimizationSettings(OptimizationSettings):
             npt.NDArray[np.float64]: Optimal weights after the optimization
         """
 
-        lb = np.zeros((settings.total_n(),))
-        ub = np.ones((settings.total_n(),))
+        lb = np.zeros((settings.total_n()[0],))
+        ub = np.ones((settings.total_n()[0],))
         weights = np.ones(settings.total_n()) * 0.5
 
-        for mask in settings.border_masks(self):
+        for mask in settings.border_masks(self.filter_radius):
             weights[mask.locations.flatten()] = mask.value
 
-        history_fpath = settings.data_dir + settings.history_fname
+        history_fpath = settings.data_dir / settings.history_fname
 
         self.use_damping = True
 
@@ -177,7 +180,7 @@ class NloptOptimizationSettings(OptimizationSettings):
         for i, sigmoid_bias in enumerate(
             biases[last_index + 1 :], start=last_index + 1
         ):
-            self.apply_settings(sigmoid_bias)
+            self.sigmoid_bias = sigmoid_bias
             solver = self.optimizer
             solver.set_lower_bounds(lb)  # type: ignore
             solver.set_upper_bounds(ub)  # type: ignore
@@ -218,3 +221,38 @@ class NloptOptimizationSettings(OptimizationSettings):
         save_output(weights, settings, self, 0, history_fpath, binarize=True)
 
         return optimal_design_weights
+
+
+@get_physics_objective.register
+def _(
+    settings: SimulationSettings, optimization: NloptOptimizationSettings
+) -> PhysicsObjective:
+    def get_nlopt_objective(
+        weights: list[npt.NDArray[np.float64]],
+    ) -> ObjectiveReturn:
+        """Default objective function used for `nlopt` optimizations. For simple
+        (single-objective) optimizations, this is sufficient as-is. For
+        more complicated objectives, you will need to customize it for your
+        needs. Weights should not be updated in-place in this function.
+
+        Args:
+            weights (list[npt.NDArray[np.float64]]): List of weights per design region.
+
+        Returns:
+            out (ObjectiveReturn): FOM and gradients for the given weights
+        """
+
+        opt = settings.create_opt(optimization)
+
+        obj_val, grad = opt([filter_and_project(weights, settings, optimization)])  # type: ignore
+
+        grad[:] = tensor_jacobian_product(filter_and_project, 0)(
+            weights,
+            settings,
+            optimization,
+            grad,
+        )
+
+        return obj_val, grad  # type: ignore
+
+    return get_nlopt_objective

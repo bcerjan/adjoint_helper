@@ -17,8 +17,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import pickle
-from adjoint_helper.simulation_settings import SimulationSettings
-from adjoint_helper.optimization_settings import OptimizationSettings
+from pathlib import Path
+from ..core.base_settings import SimulationSettings, OptimizationSettings
 
 
 class OptimizationHistory:
@@ -31,13 +31,13 @@ class OptimizationHistory:
         self.settings = settings
         self.optimization = optimization
 
-    def save_history(self, fpath: str) -> None:
+    def save_history(self, fpath: Path) -> None:
         """Convenience function to save the history to file. Will overwrite with impunity."""
         with open(fpath, "w+b") as file:
             pickle.dump(self, file)
 
 
-def load_history(fpath: str) -> OptimizationHistory | None:
+def load_history(fpath: Path) -> OptimizationHistory | None:
     """Convenience method to load the history from file."""
     print(f"Loading: {fpath}")
     try:

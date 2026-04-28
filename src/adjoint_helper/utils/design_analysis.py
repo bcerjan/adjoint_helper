@@ -21,9 +21,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from adjoint_helper.constraints import filter_and_project
-from adjoint_helper.optimization_history import load_history
-from adjoint_helper.visualization import imshow_animation
+from adjoint_helper.core.constraints import filter_and_project
+from adjoint_helper.utils.optimization_history import load_history
+from adjoint_helper.utils.visualization import imshow_animation
 
 
 hist = load_history("./temp")

@@ -18,24 +18,25 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import numpy.typing as npt
-from adjoint_helper.vendors.meep.filters import (
+from autograd import numpy as npa, tensor_jacobian_product, grad  # type: ignore
+from typing import Tuple
+
+from .base_settings import OptimizationSettings, SimulationSettings
+from ..vendors.meep.connectivity import constraint_connectivity
+from ..vendors.meep.filters import (
     conic_filter,  # type: ignore
     constraint_solid,  # type: ignore
     constraint_void,  # type: ignore
     tanh_projection,
     smoothed_projection,  # type: ignore
 )
-from autograd import numpy as npa, tensor_jacobian_product, grad  # type: ignore
-from typing import Tuple
-from adjoint_helper.simulation_settings import SimulationSettings
-from adjoint_helper.optimization_settings import OptimizationSettings
-from adjoint_helper.vendors.meep.connectivity import constraint_connectivity
 
 
 def filter_and_project(
     weights: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
+    design_region_idx: int = 0,
 ) -> npt.NDArray[np.float64]:
     """A differentiable function to filter and project the design weights.
 
@@ -43,12 +44,16 @@ def filter_and_project(
       weights: design weights as a flattened (1D) array.
       settings: SimulationSettings containing the geometrical parameters
       optimization: OptimizationSettings containing optimization parameters
+      design_region_idx: Which design region is this for? Defaults to 0 for a
+        single design region
 
     Returns:
       The mapped design weights as a 1D array.
     """
-    weights = weights.reshape(settings.nx_design, settings.ny_design)
-    masks = settings.border_masks(optimization)
+    weights = weights.reshape(
+        settings.nx_design[design_region_idx], settings.ny_design[design_region_idx]
+    )
+    masks = settings.border_masks(optimization.filter_radius)
 
     for mask in masks:
         weights = npa.where(mask.locations, mask.value, weights)  # type: ignore
@@ -59,9 +64,9 @@ def filter_and_project(
     weights_filtered = conic_filter(  # type: ignore
         weights,  # type: ignore
         optimization.filter_radius,
-        settings.designX,
-        settings.designY,
-        [settings.optResolution],
+        settings.designX[design_region_idx],
+        settings.designY[design_region_idx],
+        [settings.design_region_resolution[design_region_idx]],
     )
 
     if optimization.use_epsavg:
@@ -70,7 +75,7 @@ def filter_and_project(
                 weights_filtered,
                 optimization.sigmoid_bias,
                 optimization.sigmoid_threshold,
-                settings.optResolution,
+                settings.design_region_resolution[design_region_idx],
             )
         else:
             return weights_filtered.flatten()  # type: ignore
@@ -86,17 +91,18 @@ def filter_and_project(
 
 def line_width_and_spacing_constraint(
     weights: npt.NDArray[np.float64],
-    gradient: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
+    design_region_idx: int = 0,
 ) -> Tuple[float, npt.NDArray[np.float64]]:
     """Constraint function for the minimum line width and spacing.
 
     Args:
       weights: 1D array containing design weights
-      gradient: the Jacobian matrix, modified in place.
       settings: SimulationSettings containing the geometrical parameters
       optimization: OptimizationSettings containing optimization parameters
+      design_region_idx: Which design region is this for? Defaults to 0 for a
+        single design region
 
     Returns:
       The value of the constraint function (a scalar) and the gradient.
@@ -114,11 +120,14 @@ def line_width_and_spacing_constraint(
         a: npt.NDArray[np.float64],
     ) -> npt.NDArray[np.float64]:
         return conic_filter(  # type: ignore
-            a.reshape(settings.nx_design, settings.ny_design),
-            optimization.filter_radius,
-            settings.designX,
-            settings.designY,
-            [settings.optResolution],
+            x=a.reshape(
+                settings.nx_design[design_region_idx],
+                settings.ny_design[design_region_idx],
+            ),
+            radius=optimization.filter_radius,
+            Lx=settings.designX[design_region_idx],
+            Ly=settings.designY[design_region_idx],
+            resolution=[settings.design_region_resolution[design_region_idx]],
         )
 
     def threshold_func(
@@ -141,25 +150,24 @@ def line_width_and_spacing_constraint(
     g1 = grad(M1)(weights)  # type: ignore
     g2 = grad(M2)(weights)  # type: ignore
 
-    gradient[:] = g1.flatten() + g2.flatten()  # type: ignore
+    gradi = g1.flatten() + g2.flatten()  # type: ignore
 
     t1 = (M1(weights) - b1) / a1
     t2 = (M2(weights) - b1) / a1
 
-    return npa.max([t1, t2]), gradient  # type: ignore
+    return npa.max([t1, t2]), gradi  # type: ignore
 
 
 def connectivity_constraint(
     weights: npt.NDArray[np.float64],
-    # gradient: npt.NDArray[np.float64],
     settings: SimulationSettings,
     optimization: OptimizationSettings,
+    design_region_idx: int = 0,
 ) -> Tuple[float, npt.NDArray[np.float64]]:
     """Applies connectivity constraint
 
     Args:
       weights: Weights for the design variables
-      gradient: Gradient of the design variables
       settings: SimulationSettings containing the geometrical parameters
       optimization: OptimizationSettings containing optimization parameters
 
@@ -170,7 +178,7 @@ def connectivity_constraint(
         return (0, weights)
     weights = weights[:]
     proj = filter_and_project(weights, settings, optimization).reshape(
-        settings.nx_design, settings.ny_design
+        settings.nx_design[design_region_idx], settings.ny_design[design_region_idx]
     )  # filter and project flattens, so we need to reshape here
 
     aggT = np.ones_like(proj) * np.inf
@@ -191,9 +199,9 @@ def connectivity_constraint(
         rot = npa.rot90(proj, i).flatten()  # type: ignore
         T, _, dJ_du = constraint_connectivity(  # type: ignore
             rot,  # type: ignore
-            settings.nx_design,
+            settings.nx_design[design_region_idx],
             1,
-            settings.ny_design,
+            settings.ny_design[design_region_idx],
             p=p,
             cond_s=cond_s,
             thresh=thresh,
