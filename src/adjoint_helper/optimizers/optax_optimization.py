@@ -19,12 +19,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import numpy as np
 import numpy.typing as npt
 import optax  # type: ignore
-from ..core.base_settings import (
-    OptimizationSettings,
-    SimulationSettings,
-    PhysicsObjective,
-    ObjectiveReturn,
-)
+from ..core.defs import PhysicsObjective, ObjectiveReturn
+from ..core.export_settings import OptimizationSettings, SimulationSettings
 from ..utils.util import save_output
 from ..core.objective_factory import get_physics_objective
 from ..core.constraints import (
@@ -235,6 +231,6 @@ def _(
         optimization.obj.append(np.real(obj))  # type: ignore
         optimization.weights.append(weights[0].copy())
 
-        return obj, grad  # type: ignore
+        return [np.array(obj)], grad
 
     return get_optax_objective

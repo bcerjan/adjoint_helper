@@ -21,10 +21,10 @@ import numpy as np
 import numpy.typing as npt
 from ..vendors.meep.filters import get_conic_radius_from_eta_e  # type: ignore
 from .mask_region import MaskRegion
-
+from .defs import PhysicsObjective
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 from enum import Enum
 
 
@@ -117,44 +117,6 @@ class OptimizationSettings(ABC):
         self.connectivity_sigmoid_threshold = connectivity_sigmoid_threshold
         self.linewidth_sigmoid_threshold = linewidth_sigmoid_threshold
         self.use_smoothed_projection = use_smoothed_projection
-
-    # Change this to a bunch of getters rather than this kind of function.
-    # This is doing unnecessary stuff.
-    # def apply_settings(self, current_sigmoid_bias: float) -> None:
-    #     """Updates the optimization object to tell it to use/not use eps_avg,
-    #     damping, connectivity constraint, and linewidth constraint. Also updates
-    #     the internally stored `sigmoid_bias`
-
-    #     Args:
-    #         current_sigmoid_bias (float): Current bias of the optimization
-    #     """
-    #     self.sigmoid_bias = current_sigmoid_bias
-
-    #     if current_sigmoid_bias >= self.sigmoid_bias_threshold:
-    #         self.use_epsavg = True
-    #         # eps_avg and damping are (somewhat) mutually exclusive, see:
-    #         # https://github.com/NanoComp/photonics-opt-testbed/issues/31#issuecomment-1370041394
-    #         self.use_damping = False
-    #     else:
-    #         self.use_epsavg = False
-    #         self.use_damping = True
-
-    #     if (
-    #         current_sigmoid_bias > self.connectivity_sigmoid_threshold
-    #         and self.do_connectivity
-    #     ):
-    #         self.apply_connectivity = True
-    #     else:
-    #         self.apply_connectivity = False
-
-    #     if current_sigmoid_bias > self.linewidth_sigmoid_threshold:
-    #         self.apply_linewidth = True
-    #     else:
-    #         self.apply_linewidth = False
-
-    @abstractmethod
-    def optimize(self, settings: SimulationSettings) -> npt.NDArray[np.float64]:
-        pass
 
     @property
     def bias(self) -> float:
@@ -330,44 +292,3 @@ class SimulationSettings(ABC):
 
     def border_masks(self, filter_radius: float) -> list[MaskRegion]:
         return []
-
-
-ObjectiveReturn = tuple[
-    list[npt.NDArray[np.float64]], list[list[npt.NDArray[np.float64]]]
-]
-
-
-@runtime_checkable
-class PhysicsObjective(Protocol):
-    """
-    This is a function that will be called to convert a list of weights (one per
-    design region) into objective values and gradients. It's a bit of a doozy,
-    unfortunately, because it returns a lot of information for the optimization
-    process.
-
-    Succinctly it returns: list[weights] -> (list[objective_val], list[list[gradient]])
-    PhysicsObjective takes in a list of weights (per design region) and returns
-    a tuple containing a list of objective values (per design region) and a list
-    by objective function of lists by design region of 2D arrays of gradients (by
-    frequency).
-
-    So it's: ()
-
-    Args:
-        weights (list[npt.NDArray[np.float64]]): A list of weights per design region
-            as 1D arrays.
-
-        settings (SimulationSettings): Simulation settings needed for calculating
-            gradients / setting up the physical domain
-
-    Returns:
-        out (tuple[list[npt.NDArray[np.float64]], list[list[npt.NDArray[np.float64]]]]):
-            A tuple containing:
-            1. An array of objective values (even for a single objective, this should
-            be an array) from this iteration.
-
-            2. A list of lists of 2D gradients. The order is objective_functions
-            -> design_regions -> frequencies
-    """
-
-    def __call__(self, weights: list[npt.NDArray[np.float64]]) -> ObjectiveReturn: ...
