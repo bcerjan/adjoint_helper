@@ -17,21 +17,37 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from numpy import float64
+import numpy as np
 from numpy._typing import NDArray
-from abc import abstractmethod
+from typing import TypeVar
 
 from .base_settings import SimulationSettings as BaseSimulationSettings
-from .base_settings import OptimizationSettings as BaseOptimizationSettings
-from .base_settings import Edge
-from .objective_factory import get_physics_objective, PhysicsObjective
+from .base_settings import SimulationSettingsBase, OptimizationSettings
+from .defs import Edge, PhysicsObjective, MaskRegion, WeightsType
+from .objective_factory import get_physics_objective
+from .constraints import (
+    filter_and_project_single,
+    line_width_and_spacing_constraint_single,
+    connectivity_constraint_single,
+)
+
+W = TypeVar("W", bound="WeightsType")
+S = TypeVar("S", bound="SimulationSettingsBase")
 
 
-class SimulationSettings(BaseSimulationSettings):
+class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
     """
     Class to store all simulation parameters for save/load as well as passing
     to optimization algorithms. Import from here so that registration of
-    `get_objective()` behaves correctly. Do not directly inherit from `base_settings.py`.
+    `get_objective()` behaves correctly. For single design region simulations.
     """
+
+    nx_design: int
+    ny_design: int
+    design_region_resolution: int
+    designX: float
+    designY: float
+    connected_sides: list[Edge]
 
     def __init__(
         self,
@@ -40,66 +56,285 @@ class SimulationSettings(BaseSimulationSettings):
         matInd: float,
         subInd: float,
         bgInd: float,
-        designX: list[float] | float,
-        designY: list[float] | float,
+        designX: float,
+        designY: float,
         history_fname: str,
         data_dir: str,
         connected_sides: list[Edge] = [],
         enforce_symmetry: bool = True,
-        design_region_resolution: list[int] | int | None = None,
+        design_region_resolution: int | None = None,
     ):
+
+        self.designX = designX
+        self.designY = designY
+        if design_region_resolution is None:
+            self.design_region_resolution = 2 * resolution
+        else:
+            self.design_region_resolution = design_region_resolution
+
+        self.nx_design = round(designX * self.design_region_resolution) + 1
+        self.ny_design = round(designY * self.design_region_resolution) + 1
+        self.connected_sides = connected_sides
         super().__init__(
             wavelength=wavelength,
             resolution=resolution,
             matInd=matInd,
             subInd=subInd,
             bgInd=bgInd,
-            designX=designX,
-            designY=designY,
             history_fname=history_fname,
             data_dir=data_dir,
-            connected_sides=connected_sides,
             enforce_symmetry=enforce_symmetry,
-            design_region_resolution=design_region_resolution,
+            n_design_regions=1,
         )
 
-    def get_objective(self, optimization: BaseOptimizationSettings) -> PhysicsObjective:
+    def get_objective(
+        self,
+        optimization: OptimizationSettings,
+    ) -> PhysicsObjective:
         return get_physics_objective(self, optimization)
 
+    def total_n(self) -> int:
+        return self.nx_design * self.ny_design
 
-class OptimizationSettings(BaseOptimizationSettings):
-    def __init__(
+    def apply_symmetry(self, weights: NDArray[float64]) -> NDArray[float64]:
+        return weights
+
+    def border_masks(self, filter_radius: float) -> MaskRegion | None:
+        return None
+
+    def filter_and_project(
         self,
-        minimum_size: float = 0.05,
-        sigmoid_bias_threshold: float = 32,
-        sigmoid_threshold: float = 0.5,
-        sigmoid_erosion: float = 0.65,
-        sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40],
-        connectivity_sigmoid_threshold: float = 16,
-        linewidth_sigmoid_threshold: float = 24,
-        max_evals: list[int] | int = 10,
-        maximum_runtime: float = 200,
-        minimum_runtime: float = 0,
-        decay_by: float = 0.000001,
-        use_smoothed_projection: bool = False,
-        do_connectivity: bool = False,
-    ):
-        super().__init__(
-            minimum_size,
-            sigmoid_bias_threshold,
-            sigmoid_threshold,
-            sigmoid_erosion,
-            sigmoid_biases,
-            connectivity_sigmoid_threshold,
-            linewidth_sigmoid_threshold,
-            max_evals,
-            maximum_runtime,
-            minimum_runtime,
-            decay_by,
-            use_smoothed_projection,
-            do_connectivity,
+        weights: NDArray[float64],
+        optimization: OptimizationSettings,
+    ) -> NDArray[float64]:
+
+        return filter_and_project_single(
+            weights=weights,
+            design_region_resolution=self.design_region_resolution,
+            designX=self.designX,
+            designY=self.designY,
+            optimization=optimization,
         )
 
-    @abstractmethod
-    def optimize(self, settings: SimulationSettings) -> NDArray[float64]:
-        pass
+    def line_width_and_spacing(
+        self,
+        weights: NDArray[float64],
+        optimization: OptimizationSettings,
+    ) -> tuple[float, NDArray[float64]]:
+        return line_width_and_spacing_constraint_single(
+            weights=weights,
+            designX=self.designX,
+            designY=self.designY,
+            nx_design=self.nx_design,
+            ny_design=self.ny_design,
+            resolution=self.resolution,
+            design_region_resolution=self.design_region_resolution,
+            optimization=optimization,
+        )
+
+    def connectivity_constraint(
+        self,
+        weights: NDArray[float64],
+        optimization: OptimizationSettings,
+    ) -> tuple[float, NDArray[float64]]:
+        return connectivity_constraint_single(
+            weights=weights,
+            connected_sides=self.connected_sides,
+            design_region_resolution=self.design_region_resolution,
+            designX=self.designX,
+            designY=self.designY,
+            optimization=optimization,
+        )
+
+
+class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
+    """
+    Class to store all simulation parameters for save/load as well as passing
+    to optimization algorithms. Import from here so that registration of
+    `get_objective()` behaves correctly. For single design region simulations.
+    """
+
+    nx_design: list[int]
+    ny_design: list[int]
+    design_region_resolution: list[int]
+    designX: list[float]
+    designY: list[float]
+    connected_sides: list[list[Edge]]
+
+    def __init__(
+        self,
+        wavelength: float,
+        resolution: int,
+        matInd: float,
+        subInd: float,
+        bgInd: float,
+        designX: list[float],
+        designY: list[float],
+        history_fname: str,
+        data_dir: str,
+        connected_sides: list[list[Edge]] = [],
+        enforce_symmetry: bool = True,
+        design_region_resolution: int | list[int] | None = None,
+    ):
+
+        self.designX = designX
+        self.designY = designY
+
+        if len(designX) != len(designY):
+            raise ValueError("Must have same number of designX and designY")
+
+        if design_region_resolution is None:
+            self.design_region_resolution = [2 * resolution for _ in designX]
+        elif isinstance(design_region_resolution, int):
+            self.design_region_resolution = [design_region_resolution for _ in designX]
+        else:
+            self.design_region_resolution = design_region_resolution
+
+        if len(designX) != len(self.design_region_resolution):
+            raise ValueError(
+                "Must have same number of design regions as design region resolutions"
+            )
+
+        nx_design: list[int] = []
+        ny_design: list[int] = []
+
+        n_design_regions = len(designX)
+
+        for i in range(n_design_regions):
+            nx_design[i] = round(designX[i] * self.design_region_resolution[i]) + 1
+            ny_design[i] = round(designY[i] * self.design_region_resolution[i]) + 1
+
+        if len(connected_sides) != n_design_regions and len(connected_sides) != 0:
+            raise ValueError(
+                "If you have any connected design regions, you muse supply connections for all of them. To indicate that connectivity should not be applied to a region, insert an empty list at that index."
+            )
+
+        if len(connected_sides) == 0:
+            self.connected_sides = [[] for _ in range(n_design_regions)]
+
+        super().__init__(
+            wavelength=wavelength,
+            resolution=resolution,
+            matInd=matInd,
+            subInd=subInd,
+            bgInd=bgInd,
+            history_fname=history_fname,
+            data_dir=data_dir,
+            enforce_symmetry=enforce_symmetry,
+            n_design_regions=n_design_regions,
+        )
+
+    def get_objective(
+        self,
+        optimization: OptimizationSettings,
+    ) -> PhysicsObjective:
+        return get_physics_objective(self, optimization)
+
+    def total_n(self) -> list[int]:
+        return [
+            self.nx_design[i] * self.ny_design[i] for i in range(self.n_design_regions)
+        ]
+
+    def apply_symmetry(self, weights: list[NDArray[float64]]) -> list[NDArray[float64]]:
+        return weights
+
+    def border_masks(self, filter_radius: float) -> list[MaskRegion]:
+        return []
+
+    def filter_and_project(
+        self,
+        weights: list[NDArray[float64]],
+        optimization: OptimizationSettings,
+    ) -> list[NDArray[float64]]:
+
+        ret: list[NDArray[float64]] = []
+        for i in range(self.n_design_regions):
+            ret.append(
+                filter_and_project_single(
+                    weights=weights[i],
+                    design_region_resolution=self.design_region_resolution[i],
+                    designX=self.designX[i],
+                    designY=self.designY[i],
+                    optimization=optimization,
+                )
+            )
+
+        return ret
+
+    def to_flat(self, obj: list[NDArray[float64]]) -> NDArray[float64]:
+        """Parses the provided list of arrays into a contiguous array. Flattens
+        completely.
+
+        Args:
+            obj (list[NDArray[float64]]): Data to be flattened -- weights, gradients,...
+
+        Returns:
+            NDArray[float64]: Flattened and concatenated result
+        """
+
+        return np.concatenate(obj)
+
+    def from_flat(self, obj: NDArray[float64]) -> list[NDArray[float64]]:
+        """Unflattens the provided array based on the number of grid points
+        in each sub-array that composes it.
+
+        Args:
+            obj (NDArray[float64]): Data to be unflattened -- weights, gradients,...
+
+        Returns:
+            out (list[NDArray[float64]]): The "standard" list of arrays sorted by
+            design region
+        """
+        ret: list[NDArray[float64]] = []
+
+        start_idx = 0
+        stop_idx = 0
+        totals = self.total_n()
+        for i in range(self.n_design_regions):
+            stop_idx = start_idx + totals[i]
+            ret.append(obj[start_idx:stop_idx])
+            start_idx = stop_idx + 1
+
+        return ret
+
+    def line_width_and_spacing(
+        self,
+        weights: list[NDArray[float64]],
+        optimization: OptimizationSettings,
+    ) -> list[tuple[float, NDArray[float64]]]:
+        ret: list[tuple[float, NDArray[float64]]] = []
+        for i in range(self.n_design_regions):
+            ret.append(
+                line_width_and_spacing_constraint_single(
+                    weights=weights[i],
+                    designX=self.designX[i],
+                    designY=self.designY[i],
+                    nx_design=self.nx_design[i],
+                    ny_design=self.ny_design[i],
+                    resolution=self.resolution,
+                    design_region_resolution=self.design_region_resolution[i],
+                    optimization=optimization,
+                )
+            )
+
+        return ret
+
+    def connectivity_constraint(
+        self,
+        weights: list[NDArray[float64]],
+        optimization: OptimizationSettings,
+    ) -> list[tuple[float, NDArray[float64]]]:
+        ret: list[tuple[float, NDArray[float64]]] = []
+        for i in range(self.n_design_regions):
+            ret.append(
+                connectivity_constraint_single(
+                    weights=weights[i],
+                    connected_sides=self.connected_sides[i],
+                    design_region_resolution=self.design_region_resolution[i],
+                    designX=self.designX[i],
+                    designY=self.designY[i],
+                    optimization=optimization,
+                )
+            )
+
+        return ret

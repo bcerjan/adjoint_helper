@@ -1,10 +1,25 @@
+__all__ = ["Edge", "ObjectiveReturn", "PhysicsObjective", "MaskRegion"]
+
 import numpy as np
 import numpy.typing as npt
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, Union
+from enum import Enum
+
+
+# NEEDS TESTING TO VERIFY THESE ARE CORRECT
+class Edge(Enum):
+    BOTTOM = 0
+    LEFT = 1
+    TOP = 2
+    RIGHT = 3
+
 
 ObjectiveReturn = tuple[
     list[npt.NDArray[np.float64]], list[list[npt.NDArray[np.float64]]]
 ]
+
+
+WeightsType = Union[npt.NDArray[np.float64], list[npt.NDArray[np.float64]]]
 
 
 @runtime_checkable
@@ -41,3 +56,18 @@ class PhysicsObjective(Protocol):
     """
 
     def __call__(self, weights: list[npt.NDArray[np.float64]]) -> ObjectiveReturn: ...
+
+
+class MaskRegion:
+    locations: npt.NDArray[np.bool_]  # 1 where value should be enforced, 0 otherwise
+    value: float  # value to enforce at positions, should be in [0, 1]
+
+    def __init__(self, locations: npt.NDArray[np.bool_], value: float):
+        """Definitions for a
+
+        Args:
+            locations (npt.NDArray[np.bool_]): _description_
+            value (float): _description_
+        """
+        self.locations = locations
+        self.value = value

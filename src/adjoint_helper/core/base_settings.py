@@ -20,12 +20,14 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 from ..vendors.meep.filters import get_conic_radius_from_eta_e  # type: ignore
-from .mask_region import MaskRegion
-from .defs import PhysicsObjective
+from .defs import PhysicsObjective, MaskRegion, WeightsType
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import Any
-from enum import Enum
+from typing import Any, Union, TypeVar, Generic
+
+
+W = TypeVar("W", bound="WeightsType")
+S = TypeVar("S", bound="SimulationSettingsBase")
 
 
 class OptimizationSettings(ABC):
@@ -38,7 +40,7 @@ class OptimizationSettings(ABC):
     data: list[np.float64]
     weights: list[npt.NDArray[np.float64]]
     grad: list[np.float64]
-    connectivity: list[int]
+    connectivity: list[float]
     do_connectivity: bool
     sigmoid_threshold: float
     sigmoid_erosion: float
@@ -156,39 +158,30 @@ class OptimizationSettings(ABC):
     def use_epsavg(self, val: bool):
         self._use_epsavg = val
 
-
-# NEEDS TESTING TO VERIFY THESE ARE CORRECT
-class Edge(Enum):
-    BOTTOM = 0
-    LEFT = 1
-    TOP = 2
-    RIGHT = 3
+    @abstractmethod
+    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
+        pass
 
 
-class SimulationSettings(ABC):
+class SimulationSettingsBase(ABC):
     """
     Class to store all simulation parameters for save/load as well as passing
-    to optimization algorithms
+    to optimization algorithms. This version of the class is intended for internal
+    use only. If you are importing from here, stop, and import from export_settings.py
+    instead.
     """
 
-    nx_design: list[int]
-    ny_design: list[int]
     n_design_regions: int
-    num_wavelengths: int
     wavelength: float
     resolution: int
-    design_region_resolution: list[int]
     matInd: float
     subInd: float
     bgInd: float
-    designX: list[float]
-    designY: list[float]
     baseline_optimization_value: float
     needs_baseline: bool
     enforce_symmetry: bool
     history_fname: str
     data_dir: Path
-    connected_sides: list[Edge]
 
     def __init__(
         self,
@@ -197,66 +190,31 @@ class SimulationSettings(ABC):
         matInd: float,
         subInd: float,
         bgInd: float,
-        designX: list[float] | float,
-        designY: list[float] | float,
         history_fname: str,
         data_dir: str | Path,
-        design_region_resolution: list[int] | int | None = None,
-        connected_sides: list[Edge] = [],
         enforce_symmetry: bool = True,
+        n_design_regions: int = 1,
     ):
 
         self.wavelength = wavelength
-        self.num_wavelengths = 1
         self.resolution = resolution
 
         self.matInd = matInd
         self.subInd = subInd
         self.bgInd = bgInd
 
-        if isinstance(designX, (float, int)):
-            designX = [designX]
-        if isinstance(designY, (float, int)):
-            designY = [designY]
-
-        if isinstance(design_region_resolution, int):
-            design_region_resolution = [design_region_resolution]
-
-        if len(designX) != len(designY):
-            raise ValueError(
-                "Must have same number of x and y sizes for design region(s)"
-            )
-
-        if (design_region_resolution is not None) and (
-            len(designX) != len(design_region_resolution)
-        ):
-            raise ValueError(
-                "Must have same number of design regions and design region resolutions"
-            )
-
-        self.n_design_regions = len(designX)
-
-        self.designX = designX
-        self.designY = designY
-
-        for i in range(self.n_design_regions):
-            if design_region_resolution is None:
-                self.design_region_resolution[i] = 2 * resolution
-
-            self.nx_design[i] = round(designX[i] * self.design_region_resolution[i]) + 1
-            self.ny_design[i] = round(designY[i] * self.design_region_resolution[i]) + 1
+        self.n_design_regions = n_design_regions
 
         self.enforce_symmetry = enforce_symmetry
         self.history_fname = history_fname
         self.data_dir = Path(data_dir).resolve()
-        self.connected_sides = connected_sides
+
         self.baseline_optimization_value = -np.inf
         self.needs_baseline = True
 
-    def total_n(self) -> list[int]:
-        return [
-            self.nx_design[i] * self.ny_design[i] for i in range(len(self.nx_design))
-        ]
+    @abstractmethod
+    def total_n(self) -> Union[list[int], int]:
+        pass
 
     @abstractmethod
     def create_geometry(self) -> list[Any]:  # possibly make a generic?
@@ -285,10 +243,36 @@ class SimulationSettings(ABC):
         """
         pass
 
-    def apply_symmetry(
-        self, weights: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        return weights
+    def border_masks(
+        self, filter_radius: float
+    ) -> list[MaskRegion] | MaskRegion | None:
+        return None
 
-    def border_masks(self, filter_radius: float) -> list[MaskRegion]:
-        return []
+
+class SimulationSettings(SimulationSettingsBase, ABC, Generic[W]):
+    """
+    Class to store all simulation parameters for save/load as well as passing
+    to optimization algorithms. This version of the class is intended for internal
+    use only. If you are importing from here, stop, and import from export_settings.py
+    instead.
+    """
+
+    @abstractmethod
+    def filter_and_project(self, weights: W, optimization: OptimizationSettings) -> W:
+        pass
+
+    @abstractmethod
+    def line_width_and_spacing(
+        self, weights: W, optimization: OptimizationSettings
+    ) -> tuple[float, W] | list[tuple[float, npt.NDArray[np.float64]]]:
+        pass
+
+    @abstractmethod
+    def connectivity_constraint(
+        self, weights: W, optimization: OptimizationSettings
+    ) -> tuple[float, W] | list[tuple[float, npt.NDArray[np.float64]]]:
+        pass
+
+    @abstractmethod
+    def apply_symmetry(self, weights: W) -> W:
+        return weights
