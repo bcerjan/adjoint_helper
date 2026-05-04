@@ -20,14 +20,15 @@ import numpy as np
 import numpy.typing as npt
 import matplotlib.pyplot as plt
 from pathlib import Path
-from ..core.base_settings import OptimizationSettings, SimulationSettings
+from ..core.base_settings import OptimizationSettings, SimulationSettingsBase
 from .optimization_history import OptimizationHistory
-from ..core.constraints import filter_and_project
+from ..core.constraints import filter_and_project_single
+from ..core.defs import MaskRegion, RawWeightsType
 
 
 def save_output(
     weights: npt.NDArray[np.float64],
-    settings: SimulationSettings,
+    settings: SimulationSettingsBase,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
     history_fpath: str | Path,
@@ -60,7 +61,7 @@ def save_output(
     if binarize:
         binarize_weights(weights, settings, optimization)
 
-    optimal_design_weights = filter_and_project(
+    optimal_design_weights = filter_and_project_single(
         weights[:],
         settings,
         optimization,
@@ -126,5 +127,17 @@ def binarize_weights(
     """
     optimization.sigmoid_bias = np.inf
     weights[:] = np.round(
-        np.sign(filter_and_project(weights, settings, optimization) - 0.5) / 2 + 0.5
+        np.sign(filter_and_project_single(weights, settings, optimization) - 0.5) / 2
+        + 0.5
     )
+
+
+def apply_masks(masks: MaskRegion | list[MaskRegion] | None, weights: RawWeightsType):
+    if masks is not None:
+        if not isinstance(masks, list):
+            masks = [masks]
+
+        locs = np.concatenate([m.locations for m in masks])
+        vals = np.concatenate([m.value for m in masks])
+
+        weights[locs] = vals

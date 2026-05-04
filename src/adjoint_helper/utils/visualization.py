@@ -25,7 +25,7 @@ from matplotlib.colors import Colormap
 from matplotlib.pyplot import Artist  # type: ignore
 
 from ..core.base_settings import OptimizationSettings, SimulationSettings
-from ..core.constraints import filter_and_project
+from ..core.constraints import filter_and_project_single
 
 
 def imshow_animation(
@@ -79,7 +79,7 @@ def create_field_animation(
     output_field=mp.output_efield_x,  # type: ignore
 ) -> None:
     weights = optimization.weights[-1]
-    weights = filter_and_project(
+    weights = filter_and_project_single(
         weights[:],
         settings,
         optimization,

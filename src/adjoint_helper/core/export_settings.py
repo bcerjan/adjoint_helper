@@ -21,9 +21,8 @@ import numpy as np
 from numpy._typing import NDArray
 from typing import TypeVar
 
-from .base_settings import SimulationSettings as BaseSimulationSettings
 from .base_settings import SimulationSettingsBase, OptimizationSettings
-from .defs import Edge, PhysicsObjective, MaskRegion, WeightsType
+from .defs import Edge, PhysicsObjective, MaskRegion, WeightsType, ConstraintReturnType
 from .objective_factory import get_physics_objective
 from .constraints import (
     filter_and_project_single,
@@ -35,7 +34,7 @@ W = TypeVar("W", bound="WeightsType")
 S = TypeVar("S", bound="SimulationSettingsBase")
 
 
-class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
+class SingleRegionSettings(SimulationSettingsBase):
     """
     Class to store all simulation parameters for save/load as well as passing
     to optimization algorithms. Import from here so that registration of
@@ -96,10 +95,13 @@ class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
     def total_n(self) -> int:
         return self.nx_design * self.ny_design
 
+    def total_n_raw(self) -> int:
+        return self.total_n()
+
     def apply_symmetry(self, weights: NDArray[float64]) -> NDArray[float64]:
         return weights
 
-    def border_masks(self, filter_radius: float) -> MaskRegion | None:
+    def get_masks(self, filter_radius: float) -> MaskRegion | None:
         return None
 
     def filter_and_project(
@@ -120,7 +122,7 @@ class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
         self,
         weights: NDArray[float64],
         optimization: OptimizationSettings,
-    ) -> tuple[float, NDArray[float64]]:
+    ) -> ConstraintReturnType:
         return line_width_and_spacing_constraint_single(
             weights=weights,
             designX=self.designX,
@@ -136,7 +138,7 @@ class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
         self,
         weights: NDArray[float64],
         optimization: OptimizationSettings,
-    ) -> tuple[float, NDArray[float64]]:
+    ) -> ConstraintReturnType:
         return connectivity_constraint_single(
             weights=weights,
             connected_sides=self.connected_sides,
@@ -146,8 +148,14 @@ class SingleRegionSettings(BaseSimulationSettings[NDArray[float64]]):
             optimization=optimization,
         )
 
+    def weightslike_to_raw(self, obj: NDArray[float64]) -> NDArray[float64]:
+        return obj
 
-class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
+    def raw_to_weightslike(self, obj: NDArray[float64]) -> NDArray[float64]:
+        return obj
+
+
+class MultiRegionSettings(SimulationSettingsBase):
     """
     Class to store all simulation parameters for save/load as well as passing
     to optimization algorithms. Import from here so that registration of
@@ -224,28 +232,25 @@ class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
             n_design_regions=n_design_regions,
         )
 
-    def get_objective(
-        self,
-        optimization: OptimizationSettings,
-    ) -> PhysicsObjective:
-        return get_physics_objective(self, optimization)
-
     def total_n(self) -> list[int]:
         return [
             self.nx_design[i] * self.ny_design[i] for i in range(self.n_design_regions)
         ]
 
+    def total_n_raw(self) -> int:
+        return np.sum(self.total_n())
+
     def apply_symmetry(self, weights: list[NDArray[float64]]) -> list[NDArray[float64]]:
         return weights
 
-    def border_masks(self, filter_radius: float) -> list[MaskRegion]:
+    def get_masks(self, filter_radius: float) -> list[MaskRegion]:
         return []
 
     def filter_and_project(
         self,
         weights: list[NDArray[float64]],
         optimization: OptimizationSettings,
-    ) -> list[NDArray[float64]]:
+    ) -> NDArray[float64]:
 
         ret: list[NDArray[float64]] = []
         for i in range(self.n_design_regions):
@@ -259,9 +264,59 @@ class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
                 )
             )
 
-        return ret
+        return self.weightslike_to_raw(ret)
 
-    def to_flat(self, obj: list[NDArray[float64]]) -> NDArray[float64]:
+    def line_width_and_spacing(
+        self,
+        weights: list[NDArray[float64]],
+        optimization: OptimizationSettings,
+    ) -> ConstraintReturnType:
+
+        grads: list[NDArray[float64]] = []
+        val = -np.inf
+        # We return largest val to force the constraint.
+        # gradients for other regions should be small at that point
+        for i in range(self.n_design_regions):
+            v, g = line_width_and_spacing_constraint_single(
+                weights=weights[i],
+                designX=self.designX[i],
+                designY=self.designY[i],
+                nx_design=self.nx_design[i],
+                ny_design=self.ny_design[i],
+                resolution=self.resolution,
+                design_region_resolution=self.design_region_resolution[i],
+                optimization=optimization,
+            )
+
+            grads.append(g)
+            if v > val:
+                val = v
+
+        return (val, self.weightslike_to_raw(grads))
+
+    def connectivity_constraint(
+        self,
+        weights: list[NDArray[float64]],
+        optimization: OptimizationSettings,
+    ) -> ConstraintReturnType:
+        grads: list[NDArray[float64]] = []
+        val = -np.inf
+        for i in range(self.n_design_regions):
+            v, g = connectivity_constraint_single(
+                weights=weights[i],
+                connected_sides=self.connected_sides[i],
+                design_region_resolution=self.design_region_resolution[i],
+                designX=self.designX[i],
+                designY=self.designY[i],
+                optimization=optimization,
+            )
+            grads.append(g)
+            if v > val:
+                val = v
+
+        return (val, self.weightslike_to_raw(grads))
+
+    def weightslike_to_raw(self, obj: list[NDArray[float64]]) -> NDArray[float64]:
         """Parses the provided list of arrays into a contiguous array. Flattens
         completely.
 
@@ -271,10 +326,9 @@ class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
         Returns:
             NDArray[float64]: Flattened and concatenated result
         """
-
         return np.concatenate(obj)
 
-    def from_flat(self, obj: NDArray[float64]) -> list[NDArray[float64]]:
+    def raw_to_weightslike(self, obj: NDArray[float64]) -> list[NDArray[float64]]:
         """Unflattens the provided array based on the number of grid points
         in each sub-array that composes it.
 
@@ -294,47 +348,5 @@ class MultiRegionSettings(BaseSimulationSettings[list[NDArray[float64]]]):
             stop_idx = start_idx + totals[i]
             ret.append(obj[start_idx:stop_idx])
             start_idx = stop_idx + 1
-
-        return ret
-
-    def line_width_and_spacing(
-        self,
-        weights: list[NDArray[float64]],
-        optimization: OptimizationSettings,
-    ) -> list[tuple[float, NDArray[float64]]]:
-        ret: list[tuple[float, NDArray[float64]]] = []
-        for i in range(self.n_design_regions):
-            ret.append(
-                line_width_and_spacing_constraint_single(
-                    weights=weights[i],
-                    designX=self.designX[i],
-                    designY=self.designY[i],
-                    nx_design=self.nx_design[i],
-                    ny_design=self.ny_design[i],
-                    resolution=self.resolution,
-                    design_region_resolution=self.design_region_resolution[i],
-                    optimization=optimization,
-                )
-            )
-
-        return ret
-
-    def connectivity_constraint(
-        self,
-        weights: list[NDArray[float64]],
-        optimization: OptimizationSettings,
-    ) -> list[tuple[float, NDArray[float64]]]:
-        ret: list[tuple[float, NDArray[float64]]] = []
-        for i in range(self.n_design_regions):
-            ret.append(
-                connectivity_constraint_single(
-                    weights=weights[i],
-                    connected_sides=self.connected_sides[i],
-                    design_region_resolution=self.design_region_resolution[i],
-                    designX=self.designX[i],
-                    designY=self.designY[i],
-                    optimization=optimization,
-                )
-            )
 
         return ret

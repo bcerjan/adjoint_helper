@@ -16,20 +16,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import nlopt  # type: ignore
+from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
+from ..core.export_settings import OptimizationSettings
+from ..core.base_settings import SimulationSettingsBase
+from ..core.constraints import tensor_jacobian_product  # type: ignore
+from ..core.objective_factory import get_physics_objective
+from ..utils.util import save_output, apply_masks
+
 import numpy as np
 import numpy.typing as npt
-
-from ..core.constraints import (
-    line_width_and_spacing_constraint,
-    connectivity_constraint,
-    filter_and_project,
-    tensor_jacobian_product,  # type: ignore
-)
-from ..core.objective_factory import get_physics_objective
-from ..core.defs import ObjectiveReturn, PhysicsObjective
-from ..core.export_settings import OptimizationSettings, SimulationSettings
-from ..utils.util import save_output
+import nlopt  # type: ignore
 
 
 class NloptEpigraphOptimizationSettings(OptimizationSettings):
@@ -43,6 +39,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     connectivity_tol: float
     optimizer: nlopt.opt
     n_objectives: int
+    objective_constraints: npt.NDArray[np.float64]
     epigraph_min: float
     epigraph_max: float
 
@@ -52,6 +49,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         n_objectives: int,
         epigraph_min: float = 0,
         epigraph_max: float = 1,
+        objective_constraints: float | list[float] | None = None,
         minimum_size: float = 0.05,
         sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
         sigmoid_threshold: float = 0.5,  # Eta
@@ -80,6 +78,21 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         self.epigraph_min = epigraph_min
         self.epigraph_max = epigraph_max
 
+        if objective_constraints is None:
+            self.objective_constraints = np.array([1e-6] * self.n_objectives)
+        elif isinstance(objective_constraints, (int, float)):
+            self.objective_constraints = np.array(
+                [objective_constraints] * self.n_objectives
+            )
+
+        else:
+            if len(objective_constraints) != n_objectives:
+                raise ValueError(
+                    "If supplying individual constraint values, must specify one for every objective."
+                    f"Number of objectives ({self.n_objectives}) and number of values ({len(objective_constraints)}) do not match."
+                )
+            self.objective_constraints = np.array(objective_constraints)
+
         super().__init__(
             minimum_size=minimum_size,
             sigmoid_bias_threshold=sigmoid_bias_threshold,
@@ -96,45 +109,63 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             do_connectivity=do_connectivity,
         )
 
+    def reorganize_grads(
+        self, grads: npt.NDArray[np.float64], settings: SimulationSettingsBase
+    ) -> npt.NDArray[np.float64]:
+        """Expects that gradients are returned from the optimization in the following
+        order: [Obj0[Region0, Region1,...], Obj1[...],...] (but not in nested lists,
+        in a huge vector).
+
+        Args:
+            grads (npt.NDArray[np.float64]): Input mega-list of gradients
+
+        Returns:
+            npt.NDArray[np.float64]: gradients sorted into a 2D array where each
+            column corresponds to a different objective. (use like: grad[:, i] = ...)
+        """
+
+        chunk_size = settings.total_n_raw()
+        ret = np.zeros([chunk_size, self.n_objectives])
+        start = 0
+        stop = 0
+        for i in range(self.n_objectives):
+            stop = start + chunk_size
+            ret[:, i] = grads[start:stop]
+            start = stop + 1
+
+        return ret
+
     def _linewidth_cons(
         self,
-        weights: npt.NDArray[np.float64],
-        grad: npt.NDArray[np.float64],
-        settings: SimulationSettings,
+        weights: RawWeightsType,
+        grad: RawWeightsType,
+        settings: SimulationSettingsBase,
     ) -> float:
-        spacing, grad[:] = line_width_and_spacing_constraint(  # type: ignore
-            weights=weights, settings=settings, optimization=self
+        spacing, grad[:] = settings.line_width_and_spacing(  # type: ignore
+            weights=weights, optimization=self
         )
 
         return spacing  # type: ignore
 
     def _connectivity_cons(
         self,
-        weights: npt.NDArray[np.float64],
-        grad: npt.NDArray[np.float64],
-        settings: SimulationSettings,
+        weights: RawWeightsType,
+        grad: RawWeightsType,
+        settings: SimulationSettingsBase,
     ) -> float:
-        """_summary_
 
-        Args:
-            weights (npt.NDArray[np.float64]): _description_
-            grad (npt.NDArray[np.float64]): _description_
-            settings (SimulationSettings): _description_
-            optimization (OptimizationSettings): _description_
-
-        Returns:
-            float: _description_
-        """
-        connectivity, grad[:] = connectivity_constraint(weights, settings, self)
+        connectivity, grad[:] = settings.connectivity_constraint(
+            weights=weights, optimization=self
+        )
 
         return connectivity
 
     def _nlopt_epigraph_constraint(
         self,
         result: npt.NDArray[np.float64],
-        epigraph_and_weights: npt.NDArray[np.float64],
-        gradient: npt.NDArray[np.float64],
-        settings: SimulationSettings,
+        epigraph_and_weights: RawWeightsType,
+        gradient: RawWeightsType,
+        settings: SimulationSettingsBase,
     ) -> float:
 
         epigraph = epigraph_and_weights[0]
@@ -142,7 +173,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
         opt = settings.get_objective(self)
 
-        f0, grad = opt(weights)  # type: ignore
+        f0, grad = opt(weights)
 
         if gradient.size > 0:
             gradient[:, 0] = -1  # gradient with respect to epigraph variable
@@ -150,15 +181,16 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
         result[:] = np.real(f0) - epigraph
 
-        self.obj.append(np.real(f0))  # type: ignore
+        obj: float = np.linalg.norm(f0)  # type: ignore
+        self.obj.append(np.real(obj))
         self.weights.append(epigraph_and_weights[1:].copy())
-        self.data.append(epigraph)  # type: ignore
+        self.data.append(epigraph)
 
         print(f"Iteration: {len(self.weights)}, objective: {epigraph:.4e}\n")
 
-        return f0[0]  # type: ignore
+        return obj
 
-    def optimize(self, settings: SimulationSettings) -> npt.NDArray[np.float64]:
+    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
         """_summary_
 
         Args:
@@ -169,12 +201,11 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             npt.NDArray[np.float64]: Optimal weights after the optimization
         """
 
-        lb = np.zeros((settings.total_n()[0],))
-        ub = np.ones((settings.total_n()[0],))
-        weights = np.ones(settings.total_n()[0]) * 0.5  # add epigraph weight
+        lb = np.zeros(settings.total_n_raw())
+        ub = np.ones(settings.total_n_raw())
+        weights = np.ones(settings.total_n_raw()) * 0.5  # add epigraph weight
 
-        for mask in settings.border_masks(self.filter_radius):
-            weights[mask.locations.flatten()] = mask.value
+        apply_masks(weights=weights, masks=settings.get_masks(self.filter_radius))
 
         history_fpath = settings.data_dir / settings.history_fname
 
@@ -239,10 +270,8 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             )
             self.last_completed_index = i
 
-        optimal_design_weights = filter_and_project(
-            weights[1:],
-            settings,
-            self,
+        optimal_design_weights = settings.filter_and_project(
+            weights=weights[1:], optimization=self
         )
 
         save_output(
@@ -254,18 +283,20 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
 @get_physics_objective.register
 def _(
-    settings: SimulationSettings, optimization: NloptEpigraphOptimizationSettings
+    settings: SimulationSettingsBase, optimization: NloptEpigraphOptimizationSettings
 ) -> PhysicsObjective:
     def get_nlopt_epigraph_objective(
-        weights: list[npt.NDArray[np.float64]],
+        weights: RawWeightsType,
     ) -> ObjectiveReturn:
-        """Default objective function used for `nlopt` optimizations. For simple
-        (single-objective) optimizations, this is sufficient as-is. For
-        more complicated objectives, you will need to customize it for your
-        needs. Weights should not be updated in-place in this function.
+        """Default objective function used for `nlopt` optimizations. Best used
+        for multi-objective situations.
+
+        Expects that gradients are returned from the optimization in the following
+        order: [Obj0[Region0, Region1,...], Obj1[...],...] (but not in nested lists,
+        in a huge vector).
 
         Args:
-            weights (list[npt.NDArray[np.float64]]): List of weights per design region.
+            weights (RawWeightsType): List of weights concatenated together.
 
         Returns:
             out (ObjectiveReturn): FOM and gradients for the given weights
@@ -273,17 +304,20 @@ def _(
 
         opt = settings.create_opt(optimization)
 
-        obj_val, dJ_du = opt([filter_and_project(weights, settings, optimization)])  # type: ignore
+        obj_val, dJ_du = opt(
+            settings.filter_and_project(weights=weights, optimization=optimization)
+        )
 
-        grad = np.zeros((settings.total_n()[0], optimization.n_objectives))
+        organized = optimization.reorganize_grads(grads=dJ_du, settings=settings)
+
+        grad = np.zeros((settings.total_n_raw(), optimization.n_objectives))
         for k in range(optimization.n_objectives):
-            grad[:, k] = tensor_jacobian_product(filter_and_project, 0)(
+            grad[:, k] = tensor_jacobian_product(settings.filter_and_project, 0)(
                 weights,
-                settings,
                 optimization,
-                dJ_du[0][0][:, k],
+                organized[:, k],
             )
 
-        return obj_val, [[grad]]
+        return obj_val, grad
 
     return get_nlopt_epigraph_objective

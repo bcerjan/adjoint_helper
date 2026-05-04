@@ -21,7 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from adjoint_helper.core.constraints import filter_and_project
+from adjoint_helper.core.constraints import filter_and_project_single
 from adjoint_helper.utils.optimization_history import load_history
 from adjoint_helper.utils.visualization import imshow_animation
 
@@ -40,7 +40,7 @@ frames = np.ones((num_weights, hist.settings.nx_design, hist.settings.ny_design)
 
 # print(np.max(weights[28]))
 for i in range(num_weights):
-    frames[i, :, :] = filter_and_project(
+    frames[i, :, :] = filter_and_project_single(
         weights[i], hist.settings, hist.optimization
     ).reshape(hist.settings.nx_design, hist.settings.ny_design)
 # print(frames.shape)

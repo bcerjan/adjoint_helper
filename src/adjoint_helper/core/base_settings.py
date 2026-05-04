@@ -20,13 +20,19 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 from ..vendors.meep.filters import get_conic_radius_from_eta_e  # type: ignore
-from .defs import PhysicsObjective, MaskRegion, WeightsType
+from .defs import (
+    PhysicsObjective,
+    MaskRegion,
+    WeightsType,
+    RawWeightsType,
+    ConstraintReturnType,
+)
+from .objective_factory import get_physics_objective
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import Any, Union, TypeVar, Generic
+from typing import Any, Union, TypeVar
 
 
-W = TypeVar("W", bound="WeightsType")
 S = TypeVar("S", bound="SimulationSettingsBase")
 
 
@@ -36,8 +42,8 @@ class OptimizationSettings(ABC):
     history.
     """
 
-    obj: list[np.float64]
-    data: list[np.float64]
+    obj: list[float]
+    data: list[float]
     weights: list[npt.NDArray[np.float64]]
     grad: list[np.float64]
     connectivity: list[float]
@@ -71,7 +77,7 @@ class OptimizationSettings(ABC):
         sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
         sigmoid_threshold: float = 0.5,  # Eta
         sigmoid_erosion: float = 0.65,  # Eta_e
-        sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40],
+        sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
         connectivity_sigmoid_threshold: float = 16,
         linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
         max_evals: list[int] | int = 10,  # if int, all biases get same number
@@ -217,8 +223,17 @@ class SimulationSettingsBase(ABC):
         pass
 
     @abstractmethod
-    def create_geometry(self) -> list[Any]:  # possibly make a generic?
+    def total_n_raw(self) -> int:
+        """Total N for all design regions
+
+        Returns:
+            int: total number of variables to optimize for in all design region(s)
+        """
         pass
+
+    @abstractmethod
+    def normalization(self) -> float | list[float]:
+        return 1
 
     @abstractmethod
     def create_opt(self, optimization: OptimizationSettings) -> PhysicsObjective:
@@ -243,36 +258,54 @@ class SimulationSettingsBase(ABC):
         """
         pass
 
-    def border_masks(
-        self, filter_radius: float
-    ) -> list[MaskRegion] | MaskRegion | None:
+    def get_masks(self, filter_radius: float) -> list[MaskRegion] | MaskRegion | None:
+        """Get the masks (forced values) for the design variables. If you have
+        more than one design region and have a mask for at least one of them,
+        you must supply masks for all of them (even if they are set to False
+        everywhere). This function should return the masks in the same order
+        as the design regions.
+
+        Args:
+            filter_radius (float): Filter radius to apply for linewidth and
+                spacing constraint to make sure the masks satisfy it as well.
+
+        Returns:
+            list[MaskRegion] | MaskRegion | None: Locations where values are forced
+        """
         return None
 
-
-class SimulationSettings(SimulationSettingsBase, ABC, Generic[W]):
-    """
-    Class to store all simulation parameters for save/load as well as passing
-    to optimization algorithms. This version of the class is intended for internal
-    use only. If you are importing from here, stop, and import from export_settings.py
-    instead.
-    """
+    @abstractmethod
+    def weightslike_to_raw(self, obj: Any) -> RawWeightsType:
+        return np.concatenate(obj)
 
     @abstractmethod
-    def filter_and_project(self, weights: W, optimization: OptimizationSettings) -> W:
+    def raw_to_weightslike(self, obj: Any) -> WeightsType:
+        pass
+
+    @abstractmethod
+    def filter_and_project(
+        self, weights: Any, optimization: OptimizationSettings
+    ) -> RawWeightsType:
         pass
 
     @abstractmethod
     def line_width_and_spacing(
-        self, weights: W, optimization: OptimizationSettings
-    ) -> tuple[float, W] | list[tuple[float, npt.NDArray[np.float64]]]:
+        self, weights: Any, optimization: OptimizationSettings
+    ) -> ConstraintReturnType:
         pass
 
     @abstractmethod
     def connectivity_constraint(
-        self, weights: W, optimization: OptimizationSettings
-    ) -> tuple[float, W] | list[tuple[float, npt.NDArray[np.float64]]]:
+        self, weights: Any, optimization: OptimizationSettings
+    ) -> ConstraintReturnType:
         pass
 
     @abstractmethod
-    def apply_symmetry(self, weights: W) -> W:
+    def apply_symmetry(self, weights: Any) -> WeightsType:
         return weights
+
+    def get_objective(
+        self,
+        optimization: OptimizationSettings,
+    ) -> PhysicsObjective:
+        return get_physics_objective(self, optimization)

@@ -2,7 +2,7 @@ __all__ = ["Edge", "ObjectiveReturn", "PhysicsObjective", "MaskRegion"]
 
 import numpy as np
 import numpy.typing as npt
-from typing import Protocol, runtime_checkable, Union
+from typing import Protocol, runtime_checkable
 from enum import Enum
 
 
@@ -14,12 +14,20 @@ class Edge(Enum):
     RIGHT = 3
 
 
-ObjectiveReturn = tuple[
-    list[npt.NDArray[np.float64]], list[list[npt.NDArray[np.float64]]]
-]
+ObjectiveReturn = tuple[list[float], "RawWeightsType"]
 
 
-WeightsType = Union[npt.NDArray[np.float64], list[npt.NDArray[np.float64]]]
+type WeightsType = npt.NDArray[np.float64] | list[npt.NDArray[np.float64]]
+"""User-visible weights type, nicely separated by design region
+"""
+
+type RawWeightsType = npt.NDArray[np.float64]
+"""Non User-visible weights type, smushed together for algorithms to use
+"""
+
+type ConstraintReturnType = tuple[float, RawWeightsType]
+"""Return type for constraints (linewidth/connectivity)
+"""
 
 
 @runtime_checkable
@@ -55,7 +63,7 @@ class PhysicsObjective(Protocol):
             -> design_regions -> frequencies/parameters
     """
 
-    def __call__(self, weights: list[npt.NDArray[np.float64]]) -> ObjectiveReturn: ...
+    def __call__(self, weights: RawWeightsType) -> ObjectiveReturn: ...
 
 
 class MaskRegion:
@@ -63,7 +71,7 @@ class MaskRegion:
     value: float  # value to enforce at positions, should be in [0, 1]
 
     def __init__(self, locations: npt.NDArray[np.bool_], value: float):
-        """Definitions for a
+        """Definitions for forced values for design variables.
 
         Args:
             locations (npt.NDArray[np.bool_]): _description_
