@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -17,17 +17,15 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import numpy as np
-import numpy.typing as npt
 import matplotlib.pyplot as plt
 from pathlib import Path
 from ..core.base_settings import OptimizationSettings, SimulationSettingsBase
-from .optimization_history import OptimizationHistory
-from ..core.constraints import filter_and_project_single
-from ..core.defs import MaskRegion, RawWeightsType
+from ..core.optimization_history import OptimizationHistory
+from ..core.defs import MaskRegion, RawWeightsType, WeightsType
 
 
 def save_output(
-    weights: npt.NDArray[np.float64],
+    weights: WeightsType,
     settings: SimulationSettingsBase,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
@@ -55,48 +53,54 @@ def save_output(
     """
     # Save the unmapped weights and a bitmap image of the design weights
 
+    s_weights = settings.weightslike_to_raw(weights)
     if isinstance(history_fpath, str):
         history_fpath = Path(history_fpath).resolve()
 
     if binarize:
-        binarize_weights(weights, settings, optimization)
+        binarize_weights(s_weights, settings, optimization)
 
-    optimal_design_weights = filter_and_project_single(
-        weights[:],
-        settings,
+    optimal_design_weights = settings.filter_and_project(
+        s_weights,
         optimization,
-    ).reshape(settings.nx_design, settings.ny_design)
+    )
 
-    fig, ax = plt.subplots()  # type: ignore
-    ax.imshow(  # type: ignore
-        optimal_design_weights,
-        cmap="binary",
-        interpolation="none" if not binarize else "spline36",
-        alpha=1.0,
-    )
-    ax.set_axis_off()
+    p_weights = settings.raw_to_weightslike(optimal_design_weights)
 
-    fig.savefig(  # type: ignore
-        settings.data_dir
-        / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}.png",
-        dpi=150,
-        bbox_inches="tight",
-    )
-    # Save the final (unmapped) design as a 2D array in CSV format
-    fname = (
-        f"unmapped_design_weights_beta{sigmoid_bias}.csv"
-        if not binarize
-        else "binarized_design_weights.csv"
-    )
-    np.savetxt(
-        settings.data_dir / fname,
-        weights[:].reshape(settings.nx_design, settings.ny_design),
-        fmt="%4.2f",
-        delimiter=",",
-    )
+    if not isinstance(p_weights, list):
+        p_weights = [p_weights]
+
+    for i in range(settings.n_design_regions):
+        fig, ax = plt.subplots()  # type: ignore
+        ax.imshow(  # type: ignore
+            p_weights[i],
+            cmap="binary",
+            interpolation="none" if not binarize else "spline36",
+            alpha=1.0,
+        )
+        ax.set_axis_off()
+
+        fig.savefig(  # type: ignore
+            settings.data_dir
+            / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
+        # Save the final (unmapped) design as a 2D array in CSV format
+        fname = (
+            f"unmapped_design_weights_beta{sigmoid_bias}_region{i}.csv"
+            if not binarize
+            else f"binarized_design_weights_region{i}.csv"
+        )
+        np.savetxt(
+            settings.data_dir / fname,
+            p_weights[i],
+            fmt="%4.2f",
+            delimiter=",",
+        )
 
     hist = OptimizationHistory(settings=settings, optimization=optimization)
-    hist.save_history(history_fpath)
+    hist.save_to_json(history_fpath)
 
 
 def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
@@ -110,13 +114,12 @@ def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> 
 
 
 def binarize_weights(
-    weights: npt.NDArray[np.float64],
-    settings: SimulationSettings,
+    weights: RawWeightsType,
+    settings: SimulationSettingsBase,
     optimization: OptimizationSettings,
 ) -> None:
     """
-    Updates weights in-place to be binary. Note that this also sets optimization.sigmoid_bias
-    to np.inf, so be sure to reset it afterwards if it should be something else.
+    Updates weights in-place to be binary.
 
     :param weights: Current weights to be binarized
     :type weights: npt.NDArray[np.float64]
@@ -125,19 +128,30 @@ def binarize_weights(
     :param optimization: Optimization Settings for these weights
     :type optimization: OptimizationSettings
     """
+    sigmoid = optimization.sigmoid_bias
     optimization.sigmoid_bias = np.inf
     weights[:] = np.round(
-        np.sign(filter_and_project_single(weights, settings, optimization) - 0.5) / 2
-        + 0.5
+        np.sign(settings.filter_and_project(weights, optimization) - 0.5) / 2 + 0.5
     )
 
+    optimization.sigmoid_bias = sigmoid
 
-def apply_masks(masks: MaskRegion | list[MaskRegion] | None, weights: RawWeightsType):
+
+def apply_masks(
+    masks: MaskRegion | list[MaskRegion] | None,
+    weights: RawWeightsType,
+    multi_region: bool,
+):
     if masks is not None:
         if not isinstance(masks, list):
             masks = [masks]
 
-        locs = np.concatenate([m.locations for m in masks])
-        vals = np.concatenate([m.value for m in masks])
+        if multi_region:
+            locs = np.concatenate([np.ravel(m.locations) for m in masks])
+            vals = np.concatenate([m.value for m in masks])
 
-        weights[locs] = vals
+            weights[locs] = vals
+
+        else:
+            for mask in masks:
+                weights[np.ravel(mask.locations)] = mask.value

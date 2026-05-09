@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -16,15 +16,17 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+__all__ = ["NloptOptimizationSettings"]
+
 from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
 from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase
+from ..core.base_settings import SimulationSettingsBase, register_physics_objective
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..core.objective_factory import get_physics_objective
 from ..utils.util import save_output, apply_masks
 
 import numpy as np
 import nlopt  # type: ignore
+from pydantic import Field
 
 
 class NloptOptimizationSettings(OptimizationSettings):
@@ -37,48 +39,48 @@ class NloptOptimizationSettings(OptimizationSettings):
     handles multi-objectives that are not inherently differentiable better.
     """
 
-    linewidth_tol: float
-    connectivity_tol: float
-    optimizer: nlopt.opt
+    linewidth_tol: float = 1e-3
+    connectivity_tol: float = 1e-3
+    optimizer: nlopt.opt = Field(exclude=True)
 
-    def __init__(
-        self,
-        optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
-        minimum_size: float = 0.05,
-        sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-        sigmoid_threshold: float = 0.5,  # Eta
-        sigmoid_erosion: float = 0.65,  # Eta_e
-        sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
-        connectivity_sigmoid_threshold: float = 16,
-        linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-        max_evals: list[int] | int = 10,  # if int, all biases get same number
-        maximum_runtime: float = 200,
-        minimum_runtime: float = 0,
-        decay_by: float = 1e-6,
-        use_smoothed_projection: bool = False,
-        do_connectivity: bool = False,
-        linewidth_tol: float = 1e-3,
-        connectivity_tol: float = 1e-3,
-    ):
-        self.linewidth_tol = linewidth_tol
-        self.connectivity_tol = connectivity_tol
-        self.optimizer = optimizer
+    # def __init__(
+    #     self,
+    #     optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
+    #     minimum_size: float = 0.05,
+    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
+    #     sigmoid_threshold: float = 0.5,  # Eta
+    #     sigmoid_erosion: float = 0.65,  # Eta_e
+    #     sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
+    #     connectivity_sigmoid_threshold: float = 16,
+    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
+    #     max_evals: list[int] | int = 10,  # if int, all biases get same number
+    #     maximum_runtime: float = 200,
+    #     minimum_runtime: float = 0,
+    #     decay_by: float = 1e-6,
+    #     use_smoothed_projection: bool = False,
+    #     do_connectivity: bool = False,
+    #     linewidth_tol: float = 1e-3,
+    #     connectivity_tol: float = 1e-3,
+    # ):
+    #     self.linewidth_tol = linewidth_tol
+    #     self.connectivity_tol = connectivity_tol
+    #     self.optimizer = optimizer
 
-        super().__init__(
-            minimum_size=minimum_size,
-            sigmoid_bias_threshold=sigmoid_bias_threshold,
-            sigmoid_threshold=sigmoid_threshold,
-            sigmoid_erosion=sigmoid_erosion,
-            sigmoid_biases=sigmoid_biases,
-            connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-            linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-            max_evals=max_evals,
-            maximum_runtime=maximum_runtime,
-            minimum_runtime=minimum_runtime,
-            decay_by=decay_by,
-            use_smoothed_projection=use_smoothed_projection,
-            do_connectivity=do_connectivity,
-        )
+    #     super().__init__(
+    #         minimum_size=minimum_size,
+    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
+    #         sigmoid_threshold=sigmoid_threshold,
+    #         sigmoid_erosion=sigmoid_erosion,
+    #         sigmoid_biases=sigmoid_biases,
+    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
+    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
+    #         max_evals=max_evals,
+    #         maximum_runtime=maximum_runtime,
+    #         minimum_runtime=minimum_runtime,
+    #         decay_by=decay_by,
+    #         use_smoothed_projection=use_smoothed_projection,
+    #         do_connectivity=do_connectivity,
+    #     )
 
     def _linewidth_cons(
         self,
@@ -157,11 +159,17 @@ class NloptOptimizationSettings(OptimizationSettings):
             npt.NDArray[np.float64]: Optimal weights after the optimization
         """
 
+        settings.calculate_normalization()
+
         lb = np.zeros(settings.total_n_raw())
         ub = np.ones(settings.total_n_raw())
         weights = np.ones(settings.total_n_raw()) * 0.5
 
-        apply_masks(masks=settings.get_masks(self.filter_radius), weights=weights)
+        apply_masks(
+            masks=settings.get_masks(self.filter_radius),
+            weights=weights,
+            multi_region=settings.is_multi_region(),
+        )
 
         history_fpath = settings.data_dir / settings.history_fname
 
@@ -186,13 +194,13 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             if self.apply_linewidth:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._linewidth_cons(x, g, settings),  # type: ignore
+                    lambda x, g: self._linewidth_cons(x, g, settings),  # pyright: ignore[reportUnknownArgumentType]
                     self.linewidth_tol,
                 )
 
             if self.apply_connectivity:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._connectivity_cons(x, g, settings),  # type: ignore
+                    lambda x, g: self._connectivity_cons(x, g, settings),  # pyright: ignore[reportUnknownArgumentType]
                     self.connectivity_tol,
                 )
 
@@ -201,7 +209,7 @@ class NloptOptimizationSettings(OptimizationSettings):
             # Note: this needs to be set _after_ you set use_epsavg above, or that
             # doesn't work, and then things get bad.
             solver.set_min_objective(  # type: ignore
-                lambda x, g: self._nlopt_objective_f(x, g)  # type: ignore
+                lambda x, g: self._nlopt_objective_f(x, g, settings)  # pyright: ignore[reportUnknownArgumentType]
             )
 
             weights[:] = solver.optimize(weights)  # type: ignore
@@ -218,7 +226,7 @@ class NloptOptimizationSettings(OptimizationSettings):
         return settings.raw_to_weightslike(optimal_design_weights)
 
 
-@get_physics_objective.register
+@register_physics_objective(SimulationSettingsBase, NloptOptimizationSettings)
 def _(
     settings: SimulationSettingsBase, optimization: NloptOptimizationSettings
 ) -> PhysicsObjective:

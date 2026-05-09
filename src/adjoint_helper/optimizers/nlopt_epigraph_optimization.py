@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -16,16 +16,22 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+__all__ = ["NloptEpigraphOptimizationSettings"]
+
 from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
 from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase
+from ..core.base_settings import (
+    SimulationSettingsBase,
+    register_physics_objective,
+)
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..core.objective_factory import get_physics_objective
 from ..utils.util import save_output, apply_masks
 
 import numpy as np
 import numpy.typing as npt
 import nlopt  # type: ignore
+from pydantic import Field, model_validator
+from typing import Any
 
 
 class NloptEpigraphOptimizationSettings(OptimizationSettings):
@@ -35,79 +41,109 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     (see: https://nlopt.readthedocs.io/en/latest/NLopt_Introduction/#equivalent-formulations-of-optimization-problems)
     """
 
-    linewidth_tol: float
-    connectivity_tol: float
-    optimizer: nlopt.opt
+    linewidth_tol: float = 1e-3
+    connectivity_tol: float = 1e-3
+    optimizer: nlopt.opt = Field(exclude=True)
     n_objectives: int
-    objective_constraints: npt.NDArray[np.float64]
-    epigraph_min: float
-    epigraph_max: float
+    objective_constraints: npt.NDArray[np.float64] = np.array([])
+    epigraph_min: float = 0
+    epigraph_max: float = 1
 
-    def __init__(
-        self,
-        optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
-        n_objectives: int,
-        epigraph_min: float = 0,
-        epigraph_max: float = 1,
-        objective_constraints: float | list[float] | None = None,
-        minimum_size: float = 0.05,
-        sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-        sigmoid_threshold: float = 0.5,  # Eta
-        sigmoid_erosion: float = 0.65,  # Eta_e
-        sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
-        connectivity_sigmoid_threshold: float = 16,
-        linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-        max_evals: list[int] | int = 10,  # if int, all biases get same number
-        maximum_runtime: float = 200,
-        minimum_runtime: float = 0,
-        decay_by: float = 1e-6,
-        use_smoothed_projection: bool = False,
-        do_connectivity: bool = False,
-        linewidth_tol: float = 1e-3,
-        connectivity_tol: float = 1e-3,
-    ):
-        self.linewidth_tol = linewidth_tol
-        self.connectivity_tol = connectivity_tol
-        self.optimizer = optimizer
+    # def __init__(
+    #     self,
+    #     optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
+    #     n_objectives: int,
+    #     epigraph_min: float = 0,
+    #     epigraph_max: float = 1,
+    #     objective_constraints: float | list[float] | None = None,
+    #     minimum_size: float = 0.05,
+    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
+    #     sigmoid_threshold: float = 0.5,  # Eta
+    #     sigmoid_erosion: float = 0.65,  # Eta_e
+    #     sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
+    #     connectivity_sigmoid_threshold: float = 16,
+    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
+    #     max_evals: list[int] | int = 10,  # if int, all biases get same number
+    #     maximum_runtime: float = 200,
+    #     minimum_runtime: float = 0,
+    #     decay_by: float = 1e-6,
+    #     use_smoothed_projection: bool = False,
+    #     do_connectivity: bool = False,
+    #     linewidth_tol: float = 1e-3,
+    #     connectivity_tol: float = 1e-3,
+    # ):
+    #     self.linewidth_tol = linewidth_tol
+    #     self.connectivity_tol = connectivity_tol
+    #     self.optimizer = optimizer
 
-        if n_objectives <= 0:
-            raise ValueError("Epigraph formulation requires at least one objective")
+    #     if n_objectives <= 0:
+    #         raise ValueError("Epigraph formulation requires at least one objective")
 
-        self.n_objectives = n_objectives
+    #     self.n_objectives = n_objectives
 
-        self.epigraph_min = epigraph_min
-        self.epigraph_max = epigraph_max
+    #     self.epigraph_min = epigraph_min
+    #     self.epigraph_max = epigraph_max
 
-        if objective_constraints is None:
-            self.objective_constraints = np.array([1e-6] * self.n_objectives)
-        elif isinstance(objective_constraints, (int, float)):
-            self.objective_constraints = np.array(
-                [objective_constraints] * self.n_objectives
+    #     if objective_constraints is None:
+    #         self.objective_constraints = np.array([1e-6] * self.n_objectives)
+    #     elif isinstance(objective_constraints, (int, float)):
+    #         self.objective_constraints = np.array(
+    #             [objective_constraints] * self.n_objectives
+    #         )
+
+    #     else:
+    #         if len(objective_constraints) != n_objectives:
+    #             raise ValueError(
+    #                 "If supplying individual constraint values, must specify one for every objective."
+    #                 f"Number of objectives ({self.n_objectives}) and number of values ({len(objective_constraints)}) do not match."
+    #             )
+    #         self.objective_constraints = np.array(objective_constraints)
+
+    #     super().__init__(
+    #         minimum_size=minimum_size,
+    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
+    #         sigmoid_threshold=sigmoid_threshold,
+    #         sigmoid_erosion=sigmoid_erosion,
+    #         sigmoid_biases=sigmoid_biases,
+    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
+    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
+    #         max_evals=max_evals,
+    #         maximum_runtime=maximum_runtime,
+    #         minimum_runtime=minimum_runtime,
+    #         decay_by=decay_by,
+    #         use_smoothed_projection=use_smoothed_projection,
+    #         do_connectivity=do_connectivity,
+    #     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def fix_objective_constraints(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cons = data.get("objective_constraints")  # type: ignore
+            n = data.get["n_objectives"]  # type: ignore
+
+            if isinstance(cons, (int, float)) and n > 0:
+                data["objectove_constraints"] = np.array([cons] * n, dtype=np.float64)
+            elif isinstance(cons, list) and n > 0:
+                if len(cons) == 0:  # type: ignore
+                    # default of 1e-6 if not supplied
+                    data["objectove_constraints"] = np.array(
+                        [1e-6] * n, dtype=np.float64
+                    )
+                else:
+                    data["objectove_constraints"] = np.array(cons, dtype=np.float64)
+
+        return data  # type: ignore
+
+    @model_validator(mode="after")
+    def validate_n_objectives(self) -> "NloptEpigraphOptimizationSettings":
+        if len(self.objective_constraints) != self.n_objectives:
+            raise ValueError(
+                f"Mismatch: n_objectives ({self.n_objectives}) "
+                f"must match number of constraint values (len {len(self.objective_constraints)})"
             )
 
-        else:
-            if len(objective_constraints) != n_objectives:
-                raise ValueError(
-                    "If supplying individual constraint values, must specify one for every objective."
-                    f"Number of objectives ({self.n_objectives}) and number of values ({len(objective_constraints)}) do not match."
-                )
-            self.objective_constraints = np.array(objective_constraints)
-
-        super().__init__(
-            minimum_size=minimum_size,
-            sigmoid_bias_threshold=sigmoid_bias_threshold,
-            sigmoid_threshold=sigmoid_threshold,
-            sigmoid_erosion=sigmoid_erosion,
-            sigmoid_biases=sigmoid_biases,
-            connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-            linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-            max_evals=max_evals,
-            maximum_runtime=maximum_runtime,
-            minimum_runtime=minimum_runtime,
-            decay_by=decay_by,
-            use_smoothed_projection=use_smoothed_projection,
-            do_connectivity=do_connectivity,
-        )
+        return self
 
     def reorganize_grads(
         self, grads: npt.NDArray[np.float64], settings: SimulationSettingsBase
@@ -201,11 +237,17 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             npt.NDArray[np.float64]: Optimal weights after the optimization
         """
 
+        settings.calculate_normalization()
+
         lb = np.zeros(settings.total_n_raw())
         ub = np.ones(settings.total_n_raw())
         weights = np.ones(settings.total_n_raw()) * 0.5  # add epigraph weight
 
-        apply_masks(weights=weights, masks=settings.get_masks(self.filter_radius))
+        apply_masks(
+            weights=weights,
+            masks=settings.get_masks(self.filter_radius),
+            multi_region=settings.is_multi_region(),
+        )
 
         history_fpath = settings.data_dir / settings.history_fname
 
@@ -237,13 +279,13 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
             if self.apply_linewidth:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._linewidth_cons(x, g, settings),  # type: ignore
+                    lambda x, g: self._linewidth_cons(x, g, settings),
                     self.linewidth_tol,
                 )
 
             if self.apply_connectivity:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._connectivity_cons(x, g, settings),  # type: ignore
+                    lambda x, g: self._connectivity_cons(x, g, settings),
                     self.connectivity_tol,
                 )
 
@@ -260,7 +302,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
                 )
 
             solver.add_inequality_mconstraint(  # type: ignore
-                mconstraint, np.array([1e-6] * self.n_objectives)
+                mconstraint, self.objective_constraints
             )
 
             weights_and_epigraph[:] = solver.optimize(weights_and_epigraph)  # type: ignore
@@ -281,7 +323,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         return optimal_design_weights
 
 
-@get_physics_objective.register
+@register_physics_objective(SimulationSettingsBase, NloptEpigraphOptimizationSettings)
 def _(
     settings: SimulationSettingsBase, optimization: NloptEpigraphOptimizationSettings
 ) -> PhysicsObjective:

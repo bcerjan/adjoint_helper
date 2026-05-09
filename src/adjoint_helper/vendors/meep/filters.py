@@ -171,12 +171,10 @@ def convolve_design_weights_and_kernel(
         )  # pad only in nonperiodic directions
         h = _quarter_to_full_kernel(
             h,
-            np.array(
-                [
-                    npx * sx if 0 in periodic_axes else 3 * sx,
-                    npy * sy if 1 in periodic_axes else 3 * sy,
-                ]
-            ),
+            np.array([
+                npx * sx if 0 in periodic_axes else 3 * sx,
+                npy * sy if 1 in periodic_axes else 3 * sy,
+            ]),
         )
 
     h = h / npa.sum(h)  # Normalize the kernel

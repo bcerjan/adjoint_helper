@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -16,15 +16,18 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+__all__ = ["OptaxOptimizationSettings"]
+
 from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
 from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase
+from ..core.base_settings import SimulationSettingsBase, register_physics_objective
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..core.objective_factory import get_physics_objective
 from ..utils.util import save_output, apply_masks
 
 import numpy as np
 import optax  # type: ignore
+from pydantic import Field, model_validator
+from typing import Any, Annotated
 
 
 class OptaxOptimizationSettings(OptimizationSettings):
@@ -42,55 +45,75 @@ class OptaxOptimizationSettings(OptimizationSettings):
     and have it combine everything however you want.
     """
 
-    connectivity_penalty: float
-    linewidth_penalty: float
-    optmizer: optax.GradientTransformationExtraArgs
+    connectivity_penalty: float = 0.2
+    linewidth_penalty: float = 0.2
+    # optimizer: optax.GradientTransformationExtraArgs = Field(exclude=True)  # type:
+    optimizer: Annotated[Any, Field(exclude=True)]
+    sigmoid_bias_init: float = 4
+    sigmoid_bias_scale: float = 1.2
+    total_evals: int = 40
 
-    def __init__(
-        self,
-        minimum_size: float = 0.05,
-        sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-        sigmoid_threshold: float = 0.5,  # Eta
-        sigmoid_erosion: float = 0.65,  # Eta_e
-        sigmoid_bias_init: float = 4,
-        sigmoid_bias_scale: float = 1.2,
-        connectivity_sigmoid_threshold: float = 16,
-        linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-        total_evals: int = 40,
-        maximum_runtime: float = 200,
-        minimum_runtime: float = 0,
-        decay_by: float = 1e-6,
-        use_smoothed_projection: bool = False,
-        do_connectivity: bool = False,
-        connectivity_penalty: float = 0.2,
-        linewidth_penalty: float = 0.2,
-        optmizer: optax.GradientTransformationExtraArgs = optax.adam(learning_rate=0.2),
-    ):
-        self.connectivity_penalty = connectivity_penalty
-        self.linewidth_penalty = linewidth_penalty
-        self.optmizer = optmizer
+    # def __init__(
+    #     self,
+    #     minimum_size: float = 0.05,
+    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
+    #     sigmoid_threshold: float = 0.5,  # Eta
+    #     sigmoid_erosion: float = 0.65,  # Eta_e
+    #     sigmoid_bias_init: float = 4,
+    #     sigmoid_bias_scale: float = 1.2,
+    #     connectivity_sigmoid_threshold: float = 16,
+    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
+    #     total_evals: int = 40,
+    #     maximum_runtime: float = 200,
+    #     minimum_runtime: float = 0,
+    #     decay_by: float = 1e-6,
+    #     use_smoothed_projection: bool = False,
+    #     do_connectivity: bool = False,
+    #     connectivity_penalty: float = 0.2,
+    #     linewidth_penalty: float = 0.2,
+    #     optmizer: optax.GradientTransformationExtraArgs = optax.adam(learning_rate=0.2),
+    # ):
+    #     self.connectivity_penalty = connectivity_penalty
+    #     self.linewidth_penalty = linewidth_penalty
+    #     self.optimizer = optmizer
 
-        sigmoid_biases = [
-            sigmoid_bias_init * sigmoid_bias_scale**i for i in range(total_evals)
-        ]
+    #     sigmoid_biases = [
+    #         sigmoid_bias_init * sigmoid_bias_scale**i for i in range(total_evals)
+    #     ]
 
-        max_evals = np.ones(total_evals, dtype=np.int32).tolist()
+    #     max_evals = np.ones(total_evals, dtype=np.int32).tolist()
 
-        super().__init__(
-            minimum_size=minimum_size,
-            sigmoid_bias_threshold=sigmoid_bias_threshold,
-            sigmoid_threshold=sigmoid_threshold,
-            sigmoid_erosion=sigmoid_erosion,
-            sigmoid_biases=sigmoid_biases,
-            connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-            linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-            max_evals=max_evals,
-            maximum_runtime=maximum_runtime,
-            minimum_runtime=minimum_runtime,
-            decay_by=decay_by,
-            use_smoothed_projection=use_smoothed_projection,
-            do_connectivity=do_connectivity,
-        )
+    #     super().__init__(
+    #         minimum_size=minimum_size,
+    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
+    #         sigmoid_threshold=sigmoid_threshold,
+    #         sigmoid_erosion=sigmoid_erosion,
+    #         sigmoid_biases=sigmoid_biases,
+    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
+    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
+    #         max_evals=max_evals,
+    #         maximum_runtime=maximum_runtime,
+    #         minimum_runtime=minimum_runtime,
+    #         decay_by=decay_by,
+    #         use_smoothed_projection=use_smoothed_projection,
+    #         do_connectivity=do_connectivity,
+    #     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def calculate_biases_and_evals(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            init = data["sigmoid_bias_init"]  # type: ignore
+            scale = data["sigmoid_bias_scale"]  # type: ignore
+            n = data["total_evals"]  # type: ignore
+
+            if isinstance(n, int):
+                data["max_evals"] = np.ones(n, dtype=np.int32).tolist()
+
+                if isinstance(init, (float, int)) and isinstance(scale, (float, int)):
+                    data["sigmoid_biases"] = [init * scale**i for i in range(n)]
+
+        return data  # type: ignore
 
     def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
         """
@@ -98,12 +121,18 @@ class OptaxOptimizationSettings(OptimizationSettings):
         weights for external stuff if desired
         """
 
+        settings.calculate_normalization()
+
         num_weights = settings.total_n_raw()
 
         # Initial design weights (arbitrary constant value).
         weights = np.ones((num_weights,)) * 0.5
 
-        apply_masks(masks=settings.get_masks(self.filter_radius), weights=weights)
+        apply_masks(
+            masks=settings.get_masks(self.filter_radius),
+            weights=weights,
+            multi_region=settings.is_multi_region(),
+        )
 
         optimal_design_weights = np.zeros_like(weights)
 
@@ -118,7 +147,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
         if last_index >= 0:
             weights = self.weights[-1]
 
-        optimizer = self.optmizer  # type: ignore
+        optimizer = self.optimizer  # type: ignore
         opt_state = optimizer.init(weights)  # type: ignore
 
         for idx, sigmoid_bias in enumerate(
@@ -140,7 +169,9 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 weights[:] = np.clip(weights, 0.0, 1.0)
 
                 apply_masks(
-                    weights=weights, masks=settings.get_masks(self.filter_radius)
+                    weights=weights,
+                    masks=settings.get_masks(self.filter_radius),
+                    multi_region=settings.is_multi_region(),
                 )
 
                 # outputs
@@ -161,7 +192,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
         return settings.raw_to_weightslike(optimal_design_weights)
 
 
-@get_physics_objective.register
+@register_physics_objective(SimulationSettingsBase, OptaxOptimizationSettings)
 def _(
     settings: SimulationSettingsBase, optimization: OptaxOptimizationSettings
 ) -> PhysicsObjective:

@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -16,35 +16,58 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import pickle
+from pydantic import BaseModel
 from pathlib import Path
-from ..core.base_settings import SimulationSettings, OptimizationSettings
+
+from ..core.base_settings import SimulationSettingsBase, OptimizationSettings
 
 
-class OptimizationHistory:
+class OptimizationHistory(BaseModel):
     optimization: OptimizationSettings
-    settings: SimulationSettings
+    settings: SimulationSettingsBase
+    iteration_count: int
+    fingerprint: str
 
     def __init__(
-        self, settings: SimulationSettings, optimization: OptimizationSettings
+        self, settings: SimulationSettingsBase, optimization: OptimizationSettings
     ):
         self.settings = settings
         self.optimization = optimization
 
-    def save_history(self, fpath: Path) -> None:
-        """Convenience function to save the history to file. Will overwrite with impunity."""
-        with open(fpath, "w+b") as file:
-            pickle.dump(self, file)
+    def save_to_json(self, fpath: Path) -> None:
+        self.fingerprint = self.settings.get_fingerprint()
+        with open(fpath, "w") as f:
+            f.write(self.model_dump_json(indent=4))
+        print(f"History saved to {fpath}")
 
+    @classmethod
+    def load_from_json(
+        cls, fpath: Path, current_settings: SimulationSettingsBase, strict: bool = True
+    ) -> "OptimizationHistory | None":
 
-def load_history(fpath: Path) -> OptimizationHistory | None:
-    """Convenience method to load the history from file."""
-    print(f"Loading: {fpath}")
-    try:
-        with open(fpath, "rb") as file:
-            return pickle.load(file)
-    except FileNotFoundError:
-        return None
-    except (pickle.UnpicklingError, EOFError, AttributeError):
-        print(f"Warning: File at {fpath} is corrupt. Returning None.")
-        return None
+        try:
+            with open(fpath, "r") as f:
+                hist = cls.model_validate_json(f.read())
+
+            loaded_fingerprint = hist.settings.get_fingerprint()
+            current_fingerprint = current_settings.get_fingerprint()
+
+            if loaded_fingerprint != current_fingerprint:
+                msg = (
+                    f"\nWARNING: FINGERPRINT MISMATCH!\n"
+                    f"The loaded checkpoint was created for a DIFFERENT simulation.\n"
+                    f"Loaded Fingerprint: {loaded_fingerprint[:8]}...\n"
+                    f"Current Fingerprint: {current_fingerprint[:8]}...\n"
+                    f"Proceeding may produce physically invalid results."
+                )
+
+                if strict:
+                    raise ValueError(msg)
+                else:
+                    print(msg)
+
+            return hist
+
+        except Exception as e:
+            print(f"Error loading history: {e}")
+            return None

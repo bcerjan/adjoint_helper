@@ -1,5 +1,5 @@
 """
-Meep Adjoint Helper
+Adjoint Helper
 Copyright (C) 2026 Ben Cerjan
 
 This program is free software: you can redistribute it and/or modify
@@ -24,7 +24,7 @@ import meep as mp  # type: ignore
 from matplotlib.colors import Colormap
 from matplotlib.pyplot import Artist  # type: ignore
 
-from ..core.base_settings import OptimizationSettings, SimulationSettings
+from ..core.base_settings import OptimizationSettings, SimulationSettingsBase
 from ..core.constraints import filter_and_project_single
 
 
@@ -72,7 +72,7 @@ def imshow_animation(
 
 
 def create_field_animation(
-    settings: SimulationSettings,
+    settings: SimulationSettingsBase,
     optimization: OptimizationSettings,
     end_time: float = 200,
     output_time: float = 0.5,
@@ -98,30 +98,3 @@ def create_field_animation(
         mp.to_appended("field", mp.at_every(output_time, output_field)),  # type: ignore
         until=end_time,
     )
-
-
-def plot_structure(
-    settings: SimulationSettings,
-    optimization: OptimizationSettings,
-    volume: mp.Volume = mp.Volume(
-        size=mp.Vector3(mp.inf, mp.inf, 0), center=mp.Vector3()
-    ),
-) -> None:
-    masks = settings.border_masks(optimization)
-
-    if len(optimization.weights) > 0:
-        weights = optimization.weights[-1]
-    else:
-        weights = np.random.rand(settings.nx_design * settings.ny_design) * 0.5
-
-    for mask in masks:
-        weights = np.where(mask.locations.flatten(), mask.value, weights)  # type: ignore
-
-    if settings.baseline_optimization_value < 0:
-        settings.baseline_optimization_value = 1
-
-    opt = settings.create_opt(optimization=optimization)
-    opt.update_design([weights])  # type: ignore
-
-    opt.plot2D(output_plane=volume)  # type: ignore
-    plt.show()  # type: ignore
