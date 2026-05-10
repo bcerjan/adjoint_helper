@@ -65,7 +65,9 @@ def save_output(
         optimization,
     )
 
-    p_weights = settings.raw_to_weightslike(optimal_design_weights)
+    p_weights = settings.apply_symmetry(
+        settings.raw_to_weightslike(optimal_design_weights)
+    )
 
     if not isinstance(p_weights, list):
         p_weights = [p_weights]

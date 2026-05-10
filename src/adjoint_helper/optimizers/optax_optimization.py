@@ -48,7 +48,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
     connectivity_penalty: float = 0.2
     linewidth_penalty: float = 0.2
     # optimizer: optax.GradientTransformationExtraArgs = Field(exclude=True)  # type:
-    optimizer: Annotated[Any, Field(exclude=True)]
+    optimizer: Annotated[Any, Field(exclude=True)] = optax.adam(learning_rate=0.2)
     sigmoid_bias_init: float = 4
     sigmoid_bias_scale: float = 1.2
     total_evals: int = 40

@@ -26,7 +26,7 @@ from ..utils.util import save_output, apply_masks
 
 import numpy as np
 import nlopt  # type: ignore
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class NloptOptimizationSettings(OptimizationSettings):
@@ -42,6 +42,7 @@ class NloptOptimizationSettings(OptimizationSettings):
     linewidth_tol: float = 1e-3
     connectivity_tol: float = 1e-3
     optimizer: nlopt.opt = Field(exclude=True)
+    sigmoid_biases: list[float] = [4, 8, 16, 32, 64, 128]
 
     # def __init__(
     #     self,

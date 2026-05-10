@@ -101,7 +101,7 @@ class SingleRegionSettings(SimulationSettingsBase):
     def fix_design_region_res(cls, data: Any) -> Any:
         if isinstance(data, dict):
             d_res = data.get("design_region_resolution")  # type: ignore
-            res = data.get["resolution"]  # type: ignore
+            res = data.get("resolution")  # type: ignore
 
             if isinstance(res, int):
                 if (isinstance(d_res, int) and d_res <= 0) or d_res is None:
@@ -277,8 +277,8 @@ class MultiRegionSettings(SimulationSettingsBase):
     def fix_design_region_res(cls, data: Any) -> Any:
         if isinstance(data, dict):
             d_res = data.get("design_region_resolution")  # type: ignore
-            res = data.get["resolution"]  # type: ignore
-            n = len(data.get["designX"])  # type: ignore
+            res = data.get("resolution")  # type: ignore
+            n = len(data.get("designX"))  # type: ignore
 
             if isinstance(res, int) and n > 0:
                 if (isinstance(d_res, int) and d_res <= 0) or d_res is None:

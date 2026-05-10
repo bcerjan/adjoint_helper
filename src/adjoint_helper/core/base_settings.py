@@ -45,6 +45,7 @@ import io
 
 
 S = TypeVar("S", bound="SimulationSettingsBase")
+DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 
 
 class OptimizationSettings(BaseModel, ABC):
@@ -62,7 +63,7 @@ class OptimizationSettings(BaseModel, ABC):
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
     sigmoid_erosion: float = 0.65
-    sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40]
+    sigmoid_biases: list[float] = DEFAULT_BIASES
     sigmoid_bias: float = -1
     sigmoid_bias_threshold: float = 32
     connectivity_sigmoid_threshold: float = 16
@@ -145,9 +146,9 @@ class OptimizationSettings(BaseModel, ABC):
         # Pydantic passes 'data' as a dictionary of the arguments provided to __init__
         if isinstance(data, dict):
             val = data.get("max_evals")  # type: ignore
-            biases = data.get("sigmoid_biases")  # type: ignore
+            biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
 
-            if isinstance(val, int) and biases is not None:
+            if isinstance(val, int):
                 data["max_evals"] = [val] * len(biases)  # type: ignore
 
         return data  # type: ignore
@@ -176,7 +177,12 @@ class OptimizationSettings(BaseModel, ABC):
 
     @property
     def bias(self) -> float:
-        return self.sigmoid_biases[self.last_completed_index + 1]
+        idx = (
+            self.last_completed_index + 1
+            if self.last_completed_index + 1 < len(self.sigmoid_biases)
+            else self.last_completed_index
+        )
+        return self.sigmoid_biases[idx]
 
     @property
     def apply_linewidth(self) -> bool:
@@ -253,7 +259,7 @@ class SimulationSettingsBase(BaseModel, ABC):
     needs_baseline: bool = True
     enforce_symmetry: bool = False
     history_fname: str
-    data_dir: Path
+    data_dir: Path = Path("./output").resolve()
 
     # def __init__(
     #     self,
@@ -280,7 +286,7 @@ class SimulationSettingsBase(BaseModel, ABC):
     @classmethod
     def resolve_path(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            path = data["data_dir"]  # type: ignore
+            path = data.get("data_dir")  # type: ignore
 
             if isinstance(path, str):
                 data["data_dir"] = Path(path).resolve()

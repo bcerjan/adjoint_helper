@@ -31,7 +31,7 @@ from .core.optimization_history import OptimizationHistory
 from .core.defs import MaskRegion, Edge, PhysicsObjective, ObjectiveReturn
 
 
-from .optimizers.nlopt_optimization import NloptOptimizationSettings
-from .optimizers.optax_optimization import OptaxOptimizationSettings
-from .optimizers.nlopt_epigraph_optimization import NloptEpigraphOptimizationSettings
+# from .optimizers.nlopt_optimization import NloptOptimizationSettings
+# from .optimizers.optax_optimization import OptaxOptimizationSettings
+# from .optimizers.nlopt_epigraph_optimization import NloptEpigraphOptimizationSettings
 # from .optimizers.diffusion_optimization import AdjointDiffusionSettings # Not ready yet

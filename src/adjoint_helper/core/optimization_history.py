@@ -16,7 +16,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from pathlib import Path
 
 from ..core.base_settings import SimulationSettingsBase, OptimizationSettings
@@ -25,17 +25,13 @@ from ..core.base_settings import SimulationSettingsBase, OptimizationSettings
 class OptimizationHistory(BaseModel):
     optimization: OptimizationSettings
     settings: SimulationSettingsBase
-    iteration_count: int
-    fingerprint: str
 
-    def __init__(
-        self, settings: SimulationSettingsBase, optimization: OptimizationSettings
-    ):
-        self.settings = settings
-        self.optimization = optimization
+    @computed_field
+    @property
+    def fingerprint(self) -> str:
+        return self.settings.get_fingerprint()
 
     def save_to_json(self, fpath: Path) -> None:
-        self.fingerprint = self.settings.get_fingerprint()
         with open(fpath, "w") as f:
             f.write(self.model_dump_json(indent=4))
         print(f"History saved to {fpath}")
@@ -49,7 +45,7 @@ class OptimizationHistory(BaseModel):
             with open(fpath, "r") as f:
                 hist = cls.model_validate_json(f.read())
 
-            loaded_fingerprint = hist.settings.get_fingerprint()
+            loaded_fingerprint = hist.fingerprint
             current_fingerprint = current_settings.get_fingerprint()
 
             if loaded_fingerprint != current_fingerprint:
