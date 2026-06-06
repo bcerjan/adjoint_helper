@@ -52,6 +52,7 @@ settings = SingleRegionExampleSettings(
     designX=designX,
     designY=designY,
     history_fname="Single_Region_Adam.out",
+    enforce_symmetry=True,
 )
 
 """

@@ -25,11 +25,8 @@ from single_region_example_settings import SingleRegionExampleSettings
 
 # Optimizers must be imported individually,
 from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettings
-from adjoint_helper.backends.meep.utils import plot_structure
 import nlopt  # type: ignore
-import meep as mp
-import numpy as np
-import matplotlib.pyplot as plt
+
 
 # all units in um
 
@@ -59,6 +56,7 @@ settings = SingleRegionExampleSettings(
     designX=designX,
     designY=designY,
     history_fname="Single_Region_Nlopt.out",
+    enforce_symmetry=True,
 )
 
 
@@ -76,17 +74,5 @@ nlopt_optimization = NloptOptimizationSettings(
     # for each sigmoid_bias
     max_evals=2,  # very few, as demonstration.
 )
-opt = settings.create_sim(optimization=nlopt_optimization)
 
-
-opt.update_design([np.random.rand(settings.total_n_raw())])  # type: ignore
-
-opt.plot2D(output_plane=mp.Volume(center=mp.Vector3(), size=mp.Vector3(12, 0, 9)))  # type: ignore
-plt.show()  # type: ignore
-
-# plot_structure(
-#     opt=opt,
-#     optimization=nlopt_optimization,
-# )
-
-# nlopt_optimization.optimize(settings=settings)
+nlopt_optimization.optimize(settings=settings)
