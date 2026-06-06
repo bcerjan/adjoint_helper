@@ -1,3 +1,5 @@
+from inspect import isclass
+from typing import List
 import adjoint_helper as ah
 
 
@@ -10,7 +12,13 @@ import autograd.numpy as npa  # type: ignore
 """
 Example of a settings class with multiple design regions.
 This example optimizes a pair of spaced design regions to focus light of a single
-frequency at a design distance. The input is a planewave with X polarization.
+frequency at a design distance. The input is a planewave with linear polarization.
+
+It is set up such that you could add more design regions and it would adjust if 
+you so desired.
+
+A recreation of: https://nbviewer.jupyter.org/github/NanoComp/meep/blob/master/python/examples/adjoint_optimization/05-Near2Far.ipynb
+but with a second design region (to demonstrate how that would work)
 """
 
 
@@ -19,7 +27,6 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
     for different variations (new substrate / materials / whatever)
     """
 
-    design_region_height: float
     design_region_spacing: float
     design_region_ind: float
     gap_ind: float
@@ -28,44 +35,47 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
     wavelength: float
     resolution: int
 
+    def _get_pading(self) -> float:
+        return self.wavelength * 3
+
+    def _get_pml(self) -> float:
+        return 1.0
+
+    def get_max_design_width(self) -> float:
+        return max(self.designX)
+
+    def get_total_design_height(self) -> float:
+        return np.sum(self.designY[:-1]) + self.design_region_spacing * (
+            self.n_design_regions - 1
+        )
+
     def create_geometry(self) -> list[mp.GeometricObject]:
         """
-        Function to create overall geometry without the design region.
+        Function to create overall geometry without the design regions.
         """
 
-        padding = self.wavelength * 2
-        pmlLen = self.wavelength * 2
+        padding = self._get_pading()
+        pmlLen = self._get_pml()
 
         cell = mp.Vector3(
-            2 * pmlLen + self.designX[0] + 2 * padding,
-            2 * pmlLen + self.designY[0] + 2 * padding,
-            2 * pmlLen
-            + 2 * self.design_region_height
-            + self.design_region_spacing
-            + 2 * padding,
+            2 * pmlLen + self.get_max_design_width(),
+            2 * pmlLen + self.get_total_design_height() + 2 * padding,
         )
-        matMed = mp.Medium(index=self.design_region_ind)
+
         subMed = mp.Medium(index=self.sub_ind)
 
+        h = pmlLen + padding + self.get_total_design_height()
+
         return [
-            # Gap
+            # Chunk of substrate that fills the lower space up to the bottom of
+            # the second design region. The design regions will overwrite this:
             mp.Block(
-                size=mp.Vector3(cell.x, cell.y, self.design_region_spacing),
+                size=mp.Vector3(cell.x, h, 0),
                 center=mp.Vector3(
-                    0, 0, self.design_region_height + self.design_region_height / 2
+                    0,
+                    -cell.y / 2 + h / 2,
+                    0,
                 ),
-                material=matMed,
-            ),
-            # Lower design region (will be partially overwritten):
-            mp.Block(
-                size=mp.Vector3(cell.x, cell.y, self.design_region_height / 2),
-                center=mp.Vector3(0, 0, 0),
-                material=matMed,
-            ),
-            # Substrate:
-            mp.Block(
-                size=mp.Vector3(cell.x, cell.y, cell.z / 2),
-                center=mp.Vector3(0, 0, -cell.z / 4),
                 material=subMed,
             ),
         ]
@@ -74,97 +84,32 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         self, weights: list[npt.NDArray[np.float64]]
     ) -> list[npt.NDArray[np.float64]]:
         """Applies symmetry to weights. Takes in list of 2D weights and applies
-        symmetry to them. Might need to do raw_to_weightlsike and weightslike_to_raw
-        around this function call.
+        symmetry to them. Should be sorted into design regions already.
 
         Args:
             weights (list[npt.NDArray[np.float64]]): List of weights per design region
-                already reshapes into appropriate 2D arrays
+                already reshaped into appropriate 2D arrays
 
         Returns:
             list[npt.NDArray[np.float64]]: List of 2D arrays after symmetry
         """
-        ret: list[np.ndarray]
-        # we flip LR because numpy uses a different ordering from meep
-        return npa.ravel((npa.fliplr(weights) + weights) / 2)  # type: ignore
+        # we flip UD because numpy uses a different ordering from meep
+        ret: list[np.ndarray] = []
+        for i in range(self.n_design_regions):
+            ret.append((npa.flipud(weights[i]) + weights[i]) / 2)  # type: ignore
+
+        return ret
 
     def normalization(self) -> float | list[float]:
+        # No normalization needed for this objective
+        return super().normalization()
 
-        padding = self.wavelength
-        pmlLen = self.wavelength
-
-        cell = mp.Vector3(
-            2 * pmlLen + self.designX[0] + 2 * padding,
-            2 * pmlLen + self.designY[0] + 2 * padding,
-            2 * pmlLen
-            + 2 * self.design_region_height
-            + self.design_region_spacing
-            + 2 * padding,
-        )
-
-        symmetries: list[mp.Symmetry] = []
-
-        if self.enforce_symmetry:
-            symmetries = [mp.Mirror(direction=mp.Y_DIR, phase=-1)]  # type: ignore
-
-        pmlLayers = [mp.PML(thickness=pmlLen)]
-
-        freq = 1 / self.wavelength
-
-        df = 0.1
-
-        src = mp.Vector3(cell.x - 2 * pmlLen, cell.y - 2 * pmlLen, 0)
-
-        srcPos = mp.Vector3(0, 0, padding / 2)
-
-        sources: list[mp.Source] = [
-            mp.Source(
-                src=mp.GaussianSource(freq, fwidth=df),
-                center=srcPos,
-                size=src,
-                component=mp.Ey,
-            )
-        ]
-
-        backMed = mp.Medium(index=1)
-
-        geometry = self.create_geometry()
-
-        sim = mp.Simulation(
-            resolution=self.resolution,
-            default_material=backMed,
-            cell_size=cell,
-            sources=sources,
-            geometry=geometry,
-            boundary_layers=pmlLayers,
-            symmetries=symmetries,
-        )
-
-        fr = mp.FluxRegion(
-            center=mp.Vector3(srcPos.x, srcPos.y, srcPos.z - self.wavelength / 2),
-            size=mp.Vector3(cell.x, cell.y, 0),
-        )
-        flux = sim.add_flux(freq, 0, 1, fr)  # type: ignore
-
-        sim.run(  # type: ignore
-            until_after_sources=mp.stop_when_fields_decayed(  # type: ignore
-                25,
-                mp.Ey,  # type: ignore
-                srcPos,
-                1e-6,  # type: ignore
-            ),
-        )
-
-        empty_flux = mp.get_fluxes(flux)  # type: ignore
-        sim.reset_meep()
-
-        return empty_flux[0]
-
-    def create_opt(self, optimization: ah.OptimizationSettings) -> ah.PhysicsObjective:
+    def create_sim(
+        self, optimization: ah.OptimizationSettings
+    ) -> mpa.OptimizationProblem:
         """
-        Creates an mpa Optimization Problem for optimizing a grating coupler mated to
-        a waveguide. Works assuming the waveguide is in the x-y plane and exits the
-        simulation in the -x direction (left).
+        Creates an mpa Optimization Problem for our dual-metalens single-wavelength
+        scenario
 
         Args:
         settings: SimulationSettings containing the geometrical parameters,
@@ -172,118 +117,86 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         optimization: OptimizationSettings containing optimization parameters
 
         """
-        padding = self.wavelength
-        pmlLen = self.wavelength
+
+        padding = self._get_pading()
+        pmlLen = self._get_pml()
 
         cell = mp.Vector3(
-            2 * pmlLen + self.designX + 2 * padding,
-            2 * pmlLen + self.designY + 2 * padding + self.wgWidth,
-            2 * pmlLen + self.wgHeight + 2 * padding,
+            2 * pmlLen + self.get_max_design_width(),
+            2 * pmlLen + self.get_total_design_height() + 2 * padding,
         )
 
         symmetries: list[mp.Symmetry] = []
 
         if self.enforce_symmetry:
-            symmetries = [mp.Mirror(direction=mp.Y_DIR, phase=-1)]  # type: ignore
+            symmetries = [mp.Mirror(direction=mp.X_DIR)]  # type: ignore
 
         pmlLayers = [mp.PML(thickness=pmlLen)]
 
         freq = 1 / self.wavelength
 
-        df = 0.1
+        df = 0.2
 
-        src = mp.Vector3(cell.x - 2 * pmlLen, cell.y - 2 * pmlLen, 0)
+        src = mp.Vector3(self.get_max_design_width(), 0)
 
-        srcPos = mp.Vector3(0, 0, padding / 2)
+        srcPos = mp.Vector3(0, -cell.y / 2 + pmlLen + padding / 2)
 
         measurePos = mp.Vector3(
-            -(pmlLen + padding / 2 + self.designX) / 2,
             0,
-            0,
+            cell.y / 2 - pmlLen - padding / 4,
         )
 
         sources: list[mp.Source] = [
-            mp.GaussianBeamSource(
+            mp.Source(
                 src=mp.GaussianSource(freq, fwidth=df),
+                component=mp.Ez,  # type: ignore
                 center=srcPos,
                 size=src,
-                beam_x0=-1 * srcPos,
-                beam_w0=self.beamSize,
-                beam_E0=mp.Vector3(0, 1, 0),
-                beam_kdir=mp.Vector3(
-                    -0.09, 0, -1
-                ),  # Approximately 5 deg tilt for source
             )
         ]
 
-        matMed = mp.Medium(index=self.matInd)
-        backMed = mp.Medium(index=self.bgInd)
+        matMed = mp.Medium(index=self.design_region_ind)
+        backMed = mp.Medium(index=self.sub_ind)
 
-        nxDesign = self.nx_design
-        nyDesign = self.ny_design
+        matgrid_regions: list[mpa.DesignRegion] = []
 
-        matGrid = mp.MaterialGrid(
-            mp.Vector3(nxDesign, nyDesign, 0),
-            backMed,
-            matMed,
-            weights=np.ones((nxDesign, nyDesign)) * 0.5,
-            beta=0,
-            do_averaging=optimization.use_epsavg,
-            damping=optimization.use_damping,
-        )
-
-        matGridRegion = mpa.DesignRegion(
-            matGrid,  # type: ignore
-            volume=mp.Volume(
-                center=mp.Vector3(0, 0, 0),
-                size=mp.Vector3(self.designX, self.designY, self.wgHeight),
-            ),
-        )
         geometry = self.create_geometry()
-
-        if self.needs_baseline:
-            # We need a normalization run:
-            sim = mp.Simulation(
-                resolution=self.resolution,
-                default_material=backMed,
-                cell_size=cell,
-                sources=sources,
-                geometry=geometry,
-                boundary_layers=pmlLayers,
-                symmetries=symmetries,
+        total_height = -cell.y / 2 + pmlLen + padding
+        for i in range(self.n_design_regions):
+            matGrid = mp.MaterialGrid(
+                mp.Vector3(self.nx_design[i], self.ny_design[i]),
+                backMed,
+                matMed,
+                weights=np.ones((self.nx_design[i], self.ny_design[i])) * 0.5,
+                beta=0,
+                do_averaging=optimization.use_epsavg,
+                damping=optimization.use_damping,
+                grid_type="U_MEAN",
             )
 
-            fr = mp.FluxRegion(
-                center=mp.Vector3(srcPos.x, srcPos.y, srcPos.z - self.wavelength / 2),
-                size=mp.Vector3(cell.x, cell.y, 0),
-            )
-            flux = sim.add_flux(freq, 0, 1, fr)  # type: ignore
-
-            sim.run(  # type: ignore
-                until_after_sources=mp.stop_when_fields_decayed(  # type: ignore
-                    25,
-                    mp.Ey,  # type: ignore
-                    srcPos,
-                    1e-6,  # type: ignore
+            matGridRegion = mpa.DesignRegion(
+                matGrid,  # type: ignore
+                volume=mp.Volume(
+                    center=mp.Vector3(0, total_height + self.designY[i] / 2),
+                    size=mp.Vector3(self.designX[i], self.designY[i]),
                 ),
             )
 
-            empty_flux = mp.get_fluxes(flux)  # type: ignore
-            self.baseline_optimization_value = empty_flux[0]
-            sim.reset_meep()
+            matgrid_regions.append(matGridRegion)
 
-            # Only need baseline once
-            self.needs_baseline = False
+            total_height += self.designY[i] + self.design_region_spacing
 
-        geometry.append(
-            mp.Block(
-                center=matGridRegion.center, size=matGridRegion.size, material=matGrid
-            ),
-        )
+            geometry.append(
+                mp.Block(
+                    center=matGridRegion.center,
+                    size=matGridRegion.size,
+                    material=matGrid,
+                ),
+            )
 
         sim = mp.Simulation(
             resolution=self.resolution,
-            default_material=backMed,
+            default_material=mp.air,
             cell_size=cell,
             sources=sources,
             geometry=geometry,
@@ -292,44 +205,75 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         )
 
         # We want to maximize the power going in to this mode:
-        te0 = mpa.EigenmodeCoefficient(
-            sim,
-            mp.Volume(
+
+        near_2_far_regions = [
+            mp.Near2FarRegion(
                 center=measurePos,
-                size=mp.Vector3(0, 2 * self.wgWidth, 2 * self.wgHeight),
-            ),
-            mode=1,
-            forward=False,  # Not sure that this matters as it just inverts the sign, but we square later anyway
-            eig_parity=mp.ODD_Z,
+                size=mp.Vector3(self.get_max_design_width(), 0),
+                weight=+1,
+            )
+        ]
+
+        far_fields = mpa.Near2FarFields(
+            sim=sim,
+            Near2FarRegions=near_2_far_regions,
+            far_pts=[mp.Vector3(0, self.focal_distance)],
         )
 
-        obList: list[mpa.ObjectiveQuantity] = [te0]
+        obList: list[mpa.ObjectiveQuantity] = [far_fields]
 
-        # 1 / Mode strength divided by input flux (inverted for minimization)
-        def J(alpha: float) -> float:
-            return npa.abs(self.baseline_optimization_value / pow(alpha, 2))  # type: ignore
+        # We negate to make this a minimization objective
+        def J(far_field: List[List[complex]]) -> float:
+            return -npa.abs(far_field[0, :, 2] ** 2)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,
             objective_functions=[J],
             objective_arguments=obList,
-            design_regions=[matGridRegion],
+            design_regions=matgrid_regions,
             frequencies=[freq],
             decay_by=optimization.decay_by,
             maximum_run_time=optimization.maximum_runtime,
         )
+
+        return opt
+
+    def create_opt(self, optimization: ah.OptimizationSettings) -> ah.PhysicsObjective:
 
         # In this case, we need to wrap weights (a 1D numpy array) into a list
         # for an mpa.OptimizationProblem. The return type of the objective is expected
         # to be: tuple(list[float], numpy_array) where the list is the objective
         # value(s) and the numpy array is the gradients flattened into one large
         # array.
+        opt = self.create_sim(optimization)
+
         def obj(
             weights: npt.NDArray[np.float64],
         ) -> ah.ObjectiveReturn:
 
-            val, grad = opt([weights])  # type: ignore
+            val, grad = opt(self.separate_weights(weights))  # type: ignore
+            print(f"val: {val}")
+            print(f"max: {np.max(grad[:])}")
 
-            return ([val], grad)  # type: ignore
+            # In case of a single design region, we need to convert it back into a
+            # List[List[float]] as meep tries to be helpful by squeezing
+            if not (
+                isinstance(grad, list) and all(isinstance(item, list) for item in grad)
+            ):
+                grad = [grad]
+            return (val, npa.concatenate(grad))  # type: ignore
 
         return obj
+
+    def separate_weights(
+        self, weights: npt.NDArray[np.float64]
+    ) -> list[npt.NDArray[np.float64]]:
+        ret: list[npt.NDArray[np.float64]] = []
+        start = 0
+        stop = 0
+        for n in self.total_n():
+            stop = start + n
+            ret.append(weights[start:stop])
+            start = stop
+
+        return ret
