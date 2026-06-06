@@ -30,6 +30,8 @@ from .core.optimization_history import OptimizationHistory
 
 from .core.defs import MaskRegion, Edge, PhysicsObjective, ObjectiveReturn
 
+from .utils.util import save_fom_history, save_output
+
 
 # from .optimizers.nlopt_optimization import NloptOptimizationSettings
 # from .optimizers.optax_optimization import OptaxOptimizationSettings

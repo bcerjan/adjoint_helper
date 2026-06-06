@@ -25,7 +25,7 @@ from ..core.base_settings import (
     register_physics_objective,
 )
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks
+from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
 
 import numpy as np
 import numpy.typing as npt
@@ -178,7 +178,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         settings: SimulationSettingsBase,
     ) -> float:
         spacing, grad[:] = settings.line_width_and_spacing(  # type: ignore
-            weights=weights, optimization=self
+            weights=settings.raw_to_weightslike(weights), optimization=self
         )
 
         return spacing  # type: ignore
@@ -191,7 +191,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     ) -> float:
 
         connectivity, grad[:] = settings.connectivity_constraint(
-            weights=weights, optimization=self
+            weights=settings.raw_to_weightslike(weights), optimization=self
         )
 
         return connectivity
@@ -222,7 +222,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         self.weights.append(epigraph_and_weights[1:].copy())
         self.data.append(epigraph)
 
-        print(f"Iteration: {len(self.weights)}, objective: {epigraph:.4e}\n")
+        print(f"\nstep = {len(self.weights) + 1}")
+        print(f"\tobjective = {np.linalg.norm(np.real(f0)):.4e}")
+        print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
 
         return obj
 
@@ -248,8 +250,6 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             masks=settings.get_masks(self.filter_radius),
             multi_region=settings.is_multi_region(),
         )
-
-        history_fpath = settings.data_dir / settings.history_fname
 
         self.use_damping = True
 
@@ -307,18 +307,14 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
             weights_and_epigraph[:] = solver.optimize(weights_and_epigraph)  # type: ignore
 
-            save_output(
-                weights_and_epigraph, settings, self, sigmoid_bias, history_fpath
-            )
+            save_output(weights_and_epigraph, settings, self, sigmoid_bias)
             self.last_completed_index = i
 
         optimal_design_weights = settings.filter_and_project(
             weights=weights[1:], optimization=self
         )
 
-        save_output(
-            weights_and_epigraph[1:], settings, self, 0, history_fpath, binarize=True
-        )
+        save_output(weights_and_epigraph[1:], settings, self, 0, binarize=True)
 
         return optimal_design_weights
 
@@ -347,15 +343,24 @@ def _(
         opt = settings.create_opt(optimization)
 
         obj_val, dJ_du = opt(
-            settings.filter_and_project(weights=weights, optimization=optimization)
+            settings.filter_and_project(
+                weights=settings.raw_to_weightslike(weights), optimization=optimization
+            )
         )
 
         organized = optimization.reorganize_grads(grads=dJ_du, settings=settings)
 
         grad = np.zeros((settings.total_n_raw(), optimization.n_objectives))
         for k in range(optimization.n_objectives):
-            grad[:, k] = tensor_jacobian_product(settings.filter_and_project, 0)(
+            # grad[:, k] = tensor_jacobian_product(settings.filter_and_project, 0)(
+            #     weights,
+            #     optimization,
+            #     organized[:, k],
+            # )
+
+            grad[:, k] = tensor_jacobian_product(wrapped_filter_and_project, 0)(
                 weights,
+                settings,
                 optimization,
                 organized[:, k],
             )

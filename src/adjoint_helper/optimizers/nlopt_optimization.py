@@ -22,11 +22,11 @@ from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeigh
 from ..core.export_settings import OptimizationSettings
 from ..core.base_settings import SimulationSettingsBase, register_physics_objective
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks
+from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
 
 import numpy as np
 import nlopt  # type: ignore
-from pydantic import Field, model_validator
+from pydantic import Field
 
 
 class NloptOptimizationSettings(OptimizationSettings):
@@ -44,45 +44,6 @@ class NloptOptimizationSettings(OptimizationSettings):
     optimizer: nlopt.opt = Field(exclude=True)
     sigmoid_biases: list[float] = [4, 8, 16, 32, 64, 128]
 
-    # def __init__(
-    #     self,
-    #     optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
-    #     minimum_size: float = 0.05,
-    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-    #     sigmoid_threshold: float = 0.5,  # Eta
-    #     sigmoid_erosion: float = 0.65,  # Eta_e
-    #     sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
-    #     connectivity_sigmoid_threshold: float = 16,
-    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-    #     max_evals: list[int] | int = 10,  # if int, all biases get same number
-    #     maximum_runtime: float = 200,
-    #     minimum_runtime: float = 0,
-    #     decay_by: float = 1e-6,
-    #     use_smoothed_projection: bool = False,
-    #     do_connectivity: bool = False,
-    #     linewidth_tol: float = 1e-3,
-    #     connectivity_tol: float = 1e-3,
-    # ):
-    #     self.linewidth_tol = linewidth_tol
-    #     self.connectivity_tol = connectivity_tol
-    #     self.optimizer = optimizer
-
-    #     super().__init__(
-    #         minimum_size=minimum_size,
-    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
-    #         sigmoid_threshold=sigmoid_threshold,
-    #         sigmoid_erosion=sigmoid_erosion,
-    #         sigmoid_biases=sigmoid_biases,
-    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-    #         max_evals=max_evals,
-    #         maximum_runtime=maximum_runtime,
-    #         minimum_runtime=minimum_runtime,
-    #         decay_by=decay_by,
-    #         use_smoothed_projection=use_smoothed_projection,
-    #         do_connectivity=do_connectivity,
-    #     )
-
     def _linewidth_cons(
         self,
         weights: RawWeightsType,
@@ -91,7 +52,7 @@ class NloptOptimizationSettings(OptimizationSettings):
     ) -> float:
 
         spacing, grad[:] = settings.line_width_and_spacing(
-            weights=weights, optimization=self
+            weights=settings.raw_to_weightslike(weights), optimization=self
         )
 
         return spacing
@@ -114,7 +75,7 @@ class NloptOptimizationSettings(OptimizationSettings):
             float: _description_
         """
         connectivity, grad[:] = settings.connectivity_constraint(
-            weights=weights, optimization=self
+            weights=settings.raw_to_weightslike(weights), optimization=self
         )
 
         return connectivity
@@ -144,7 +105,8 @@ class NloptOptimizationSettings(OptimizationSettings):
         self.weights.append(weights.copy())
         self.data.append(obj)
 
-        print(f"Iteration: {len(self.weights)}, objective: {obj:.4e}\n")
+        print(f"\nstep = {len(self.weights) + 1}")
+        print(f"\tobjective = {np.linalg.norm(np.real(f0)):.4e}")
         print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
 
         return obj
@@ -171,8 +133,6 @@ class NloptOptimizationSettings(OptimizationSettings):
             weights=weights,
             multi_region=settings.is_multi_region(),
         )
-
-        history_fpath = settings.data_dir / settings.history_fname
 
         self.use_damping = True
 
@@ -215,14 +175,14 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             weights[:] = solver.optimize(weights)  # type: ignore
 
-            save_output(weights, settings, self, sigmoid_bias, history_fpath)
+            save_output(weights, settings, self, sigmoid_bias)
             self.last_completed_index = i
 
         optimal_design_weights = settings.filter_and_project(
             weights=weights, optimization=self
         )
 
-        save_output(weights, settings, self, 0, history_fpath, binarize=True)
+        save_output(weights, settings, self, 0, binarize=True)
 
         return settings.raw_to_weightslike(optimal_design_weights)
 
@@ -249,11 +209,17 @@ def _(
         opt = settings.create_opt(optimization)
 
         obj_val, grad = opt(
-            settings.filter_and_project(weights=weights, optimization=optimization)
+            settings.filter_and_project(
+                weights=settings.raw_to_weightslike(weights), optimization=optimization
+            )
         )
 
-        grad[:] = tensor_jacobian_product(settings.filter_and_project, 0)(
+        # Squeeze grad into a 1D vector:
+        grad = grad.ravel()
+        print(f"grad: {grad.shape}, weights: {weights.shape}")
+        grad[:] = tensor_jacobian_product(wrapped_filter_and_project, 0)(
             weights,
+            settings,
             optimization,
             grad,
         )

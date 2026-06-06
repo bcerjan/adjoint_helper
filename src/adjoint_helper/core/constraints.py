@@ -55,17 +55,6 @@ def filter_and_project_single(
     Returns:
         npt.NDArray[np.float64]: filtered weights as a 1D array
     """
-    # weights = weights.reshape(nx_design, ny_design)
-    # masks = settings.border_masks(optimization.filter_radius)
-
-    # nx_design = np.size(weights, 0)
-    # ny_design = np.size(weights, 1)
-
-    # for mask in masks:
-    #     weights = npa.where(mask.locations, mask.value, weights)  # type: ignore
-
-    # if enforce_symmetry:
-    #     weights = settings.apply_symmetry(weights)  # type: ignore
 
     weights_filtered = conic_filter(  # type: ignore
         weights,  # type: ignore

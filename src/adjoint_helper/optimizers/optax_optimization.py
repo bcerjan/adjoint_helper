@@ -22,7 +22,7 @@ from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeigh
 from ..core.export_settings import OptimizationSettings
 from ..core.base_settings import SimulationSettingsBase, register_physics_objective
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks
+from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
 
 import numpy as np
 import optax  # type: ignore
@@ -53,59 +53,14 @@ class OptaxOptimizationSettings(OptimizationSettings):
     sigmoid_bias_scale: float = 1.2
     total_evals: int = 40
 
-    # def __init__(
-    #     self,
-    #     minimum_size: float = 0.05,
-    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-    #     sigmoid_threshold: float = 0.5,  # Eta
-    #     sigmoid_erosion: float = 0.65,  # Eta_e
-    #     sigmoid_bias_init: float = 4,
-    #     sigmoid_bias_scale: float = 1.2,
-    #     connectivity_sigmoid_threshold: float = 16,
-    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-    #     total_evals: int = 40,
-    #     maximum_runtime: float = 200,
-    #     minimum_runtime: float = 0,
-    #     decay_by: float = 1e-6,
-    #     use_smoothed_projection: bool = False,
-    #     do_connectivity: bool = False,
-    #     connectivity_penalty: float = 0.2,
-    #     linewidth_penalty: float = 0.2,
-    #     optmizer: optax.GradientTransformationExtraArgs = optax.adam(learning_rate=0.2),
-    # ):
-    #     self.connectivity_penalty = connectivity_penalty
-    #     self.linewidth_penalty = linewidth_penalty
-    #     self.optimizer = optmizer
-
-    #     sigmoid_biases = [
-    #         sigmoid_bias_init * sigmoid_bias_scale**i for i in range(total_evals)
-    #     ]
-
-    #     max_evals = np.ones(total_evals, dtype=np.int32).tolist()
-
-    #     super().__init__(
-    #         minimum_size=minimum_size,
-    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
-    #         sigmoid_threshold=sigmoid_threshold,
-    #         sigmoid_erosion=sigmoid_erosion,
-    #         sigmoid_biases=sigmoid_biases,
-    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-    #         max_evals=max_evals,
-    #         maximum_runtime=maximum_runtime,
-    #         minimum_runtime=minimum_runtime,
-    #         decay_by=decay_by,
-    #         use_smoothed_projection=use_smoothed_projection,
-    #         do_connectivity=do_connectivity,
-    #     )
-
     @model_validator(mode="before")
     @classmethod
     def calculate_biases_and_evals(cls, data: Any) -> Any:
+        # If we update defaults above, need to change here as well
         if isinstance(data, dict):
-            init = data["sigmoid_bias_init"]  # type: ignore
-            scale = data["sigmoid_bias_scale"]  # type: ignore
-            n = data["total_evals"]  # type: ignore
+            init = data.get("sigmoid_bias_init", 4)  # type: ignore
+            scale = data.get("sigmoid_bias_scale", 1.2)  # type: ignore
+            n = data.get("total_evals", 40)  # type: ignore
 
             if isinstance(n, int):
                 data["max_evals"] = np.ones(n, dtype=np.int32).tolist()
@@ -135,8 +90,6 @@ class OptaxOptimizationSettings(OptimizationSettings):
         )
 
         optimal_design_weights = np.zeros_like(weights)
-
-        history_fpath = settings.data_dir / settings.history_fname
 
         self.use_damping = True
 
@@ -179,7 +132,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 print(f"\tobjective = {np.linalg.norm(np.real(val)):.4e}")
                 print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
 
-            save_output(weights, settings, self, sigmoid_bias, history_fpath)
+            save_output(weights, settings, self, sigmoid_bias)
 
             self.last_completed_index = idx
 
@@ -187,7 +140,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
             weights=weights, optimization=self
         )
 
-        save_output(weights, settings, self, 0, history_fpath, binarize=True)
+        save_output(weights, settings, self, 0, binarize=True)
 
         return settings.raw_to_weightslike(optimal_design_weights)
 
@@ -213,13 +166,16 @@ def _(
 
         opt = settings.create_opt(optimization)
         obj_val, grad = opt(
-            settings.filter_and_project(weights=weights, optimization=optimization)
-        )  # type: ignore
+            settings.filter_and_project(
+                weights=settings.raw_to_weightslike(weights), optimization=optimization
+            )
+        )
 
         obj: float = np.sum(obj_val)
 
-        grad[:] = tensor_jacobian_product(settings.filter_and_project, 0)(
+        grad[:] = tensor_jacobian_product(wrapped_filter_and_project, 0)(
             weights,
+            settings,
             optimization,
             grad,
         )

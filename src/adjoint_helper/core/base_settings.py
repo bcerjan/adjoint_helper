@@ -63,7 +63,7 @@ class OptimizationSettings(BaseModel, ABC):
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
     sigmoid_erosion: float = 0.65
-    sigmoid_biases: list[float] = DEFAULT_BIASES
+    sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40]
     sigmoid_bias: float = -1
     sigmoid_bias_threshold: float = 32
     connectivity_sigmoid_threshold: float = 16
@@ -81,72 +81,16 @@ class OptimizationSettings(BaseModel, ABC):
     last_completed_index: int = -1
     minimum_feature_size: float = 0.05
 
-    # def __init__(
-    #     self,
-    #     minimum_size: float = 0.05,
-    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-    #     sigmoid_threshold: float = 0.5,  # Eta
-    #     sigmoid_erosion: float = 0.65,  # Eta_e
-    #     sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
-    #     connectivity_sigmoid_threshold: float = 16,
-    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-    #     max_evals: list[int] | int = 10,  # if int, all biases get same number
-    #     maximum_runtime: float = 200,
-    #     minimum_runtime: float = 0,
-    #     decay_by: float = 1e-6,
-    #     use_smoothed_projection: bool = False,
-    #     do_connectivity: bool = False,
-    # ):
-    # super().__init__()
-    # evals: list[int] = []
-
-    # if type(max_evals) is list and len(sigmoid_biases) != len(max_evals):
-    #     raise ValueError("Mismatch between length of sigmoid_biases and max_evals")
-
-    # if type(max_evals) is int:
-    #     evals = [max_evals for _ in sigmoid_biases]
-    # else:
-    #     evals = max_evals  # type: ignore
-
-    # self.obj = []
-    # self.data = []
-    # self.weights = []
-    # self.grad = []
-    # self.connectivity = []
-    # self.last_completed_index = -1
-
-    # self.filter_radius = get_conic_radius_from_eta_e(  # type: ignore
-    #     minimum_size, sigmoid_erosion
-    # )
-
-    # self.sigmoid_bias = sigmoid_biases[0]
-    # self.sigmoid_biases = sigmoid_biases
-    # self.sigmoid_bias_threshold = sigmoid_bias_threshold
-    # self.sigmoid_threshold = sigmoid_threshold
-    # self.sigmoid_erosion = sigmoid_erosion
-    # self.sigmoid_dilation = 1 - sigmoid_erosion
-    # self.max_evals = evals
-    # self.maximum_runtime = maximum_runtime
-    # self.minimum_runtime = minimum_runtime
-    # self.decay_by = decay_by
-    # self.apply_connectivity = False
-    # self.apply_linewidth = False
-    # self._apply_connectivity = False
-    # self.do_connectivity = do_connectivity
-    # self.connectivity_sigmoid_threshold = connectivity_sigmoid_threshold
-    # self.linewidth_sigmoid_threshold = linewidth_sigmoid_threshold
-    # self.use_smoothed_projection = use_smoothed_projection
-
     @model_validator(mode="before")
     @classmethod
     def expand_max_evals(cls, data: Any) -> Any:
         """
-        Intercepts the input dictionary to handle the int | list[int] logic.
+        Expands max_evals if passed as int. Update default below if you update
+        them above.
         """
-        # Pydantic passes 'data' as a dictionary of the arguments provided to __init__
         if isinstance(data, dict):
             val = data.get("max_evals")  # type: ignore
-            biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
+            biases = data.get("sigmoid_biases", [4, 8, 16, 24, 32, 40])  # type: ignore
 
             if isinstance(val, int):
                 data["max_evals"] = [val] * len(biases)  # type: ignore
@@ -261,32 +205,11 @@ class SimulationSettingsBase(BaseModel, ABC):
     history_fname: str
     data_dir: Path = Path("./output").resolve()
 
-    # def __init__(
-    #     self,
-    #     resolution: int,
-    #     history_fname: str,
-    #     data_dir: str | Path,
-    #     enforce_symmetry: bool = True,
-    #     n_design_regions: int = 1,
-    # ):
-    #     super().__init__()
-
-    #     self.resolution = resolution
-
-    #     self.n_design_regions = n_design_regions
-
-    #     self.enforce_symmetry = enforce_symmetry
-    #     self.history_fname = history_fname
-    #     self.data_dir = Path(data_dir).resolve()
-
-    #     self.baseline_optimization_value = -np.inf
-    #     self.needs_baseline = True
-
     @model_validator(mode="before")
     @classmethod
     def resolve_path(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            path = data.get("data_dir")  # type: ignore
+            path = data.get("data_dir", "./output")  # type: ignore
 
             if isinstance(path, str):
                 data["data_dir"] = Path(path).resolve()
@@ -373,7 +296,7 @@ class SimulationSettingsBase(BaseModel, ABC):
         return np.concatenate(obj)
 
     @abstractmethod
-    def raw_to_weightslike(self, obj: Any) -> WeightsType:
+    def raw_to_weightslike(self, obj: RawWeightsType) -> WeightsType:
         pass
 
     @abstractmethod
@@ -396,6 +319,9 @@ class SimulationSettingsBase(BaseModel, ABC):
 
     @abstractmethod
     def apply_symmetry(self, weights: Any) -> WeightsType:
+        """weights should be WeightsType, but we can't specify that
+        without a lot of headache.
+        """
         return weights
 
     @abstractmethod

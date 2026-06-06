@@ -18,7 +18,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
 from ..core.base_settings import OptimizationSettings, SimulationSettingsBase
 from ..core.optimization_history import OptimizationHistory
 from ..core.defs import MaskRegion, RawWeightsType, WeightsType
@@ -29,7 +28,6 @@ def save_output(
     settings: SimulationSettingsBase,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
-    history_fpath: str | Path,
     binarize: bool = False,
 ) -> None:
     """
@@ -54,14 +52,14 @@ def save_output(
     # Save the unmapped weights and a bitmap image of the design weights
 
     s_weights = settings.weightslike_to_raw(weights)
-    if isinstance(history_fpath, str):
-        history_fpath = Path(history_fpath).resolve()
 
     if binarize:
         binarize_weights(s_weights, settings, optimization)
 
+    organized = settings.raw_to_weightslike(s_weights)
+
     optimal_design_weights = settings.filter_and_project(
-        s_weights,
+        organized,
         optimization,
     )
 
@@ -102,7 +100,7 @@ def save_output(
         )
 
     hist = OptimizationHistory(settings=settings, optimization=optimization)
-    hist.save_to_json(history_fpath)
+    hist.save_to_json(settings.data_dir / settings.history_fname)
 
 
 def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
@@ -148,6 +146,9 @@ def apply_masks(
         if not isinstance(masks, list):
             masks = [masks]
 
+        if len(masks) == 0:
+            return
+
         if multi_region:
             locs = np.concatenate([np.ravel(m.locations) for m in masks])
             vals = np.concatenate([m.value for m in masks])
@@ -157,3 +158,22 @@ def apply_masks(
         else:
             for mask in masks:
                 weights[np.ravel(mask.locations)] = mask.value
+
+
+def wrapped_filter_and_project(
+    weights: RawWeightsType,
+    settings: SimulationSettingsBase,
+    optimization: OptimizationSettings,
+) -> RawWeightsType:
+    """Wrapper to allow passing a list of arrays through tensor_jacobian_product
+
+    Args:
+        weights (RawWeightsType): Weights as a 1D array
+        settings (SimulationSettingsBase): Settings object
+        optimization (OptimizationSettings): Optimization object
+
+    Returns:
+        RawWeightsType: Flattened 1D array after the tensor product
+    """
+    w = settings.raw_to_weightslike(weights)
+    return settings.filter_and_project(w, optimization)

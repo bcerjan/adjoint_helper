@@ -58,43 +58,10 @@ class SingleRegionSettings(SimulationSettingsBase):
     `get_objective()` behaves correctly. For single design region simulations.
     """
 
-    # nx_design: int = 0
-    # ny_design: int = 0
     design_region_resolution: int = 0
     designX: float
     designY: float
     connected_sides: list[Edge] = []
-
-    # def __init__(
-    #     self,
-    #     resolution: int,
-    #     designX: float,
-    #     designY: float,
-    #     history_fname: str,
-    #     data_dir: str,
-    #     connected_sides: list[Edge] = [],
-    #     enforce_symmetry: bool = True,
-    #     design_region_resolution: int | None = None,
-    # ):
-
-    #     super().__init__(
-    #         resolution=resolution,
-    #         history_fname=history_fname,
-    #         data_dir=data_dir,
-    #         enforce_symmetry=enforce_symmetry,
-    #         n_design_regions=1,
-    #     )
-
-    #     self.designX = designX
-    #     self.designY = designY
-    #     if design_region_resolution is None:
-    #         self.design_region_resolution = max(2 * resolution, 200)
-    #     else:
-    #         self.design_region_resolution = design_region_resolution
-
-    #     self.nx_design = round(designX * self.design_region_resolution) + 1
-    #     self.ny_design = round(designY * self.design_region_resolution) + 1
-    #     self.connected_sides = connected_sides
 
     @model_validator(mode="before")
     @classmethod
@@ -217,61 +184,6 @@ class MultiRegionSettings(SimulationSettingsBase):
     designY: list[float]
     connected_sides: list[list[Edge]] = []
 
-    # def __init__(
-    #     self,
-    #     resolution: int,
-    #     designX: list[float],
-    #     designY: list[float],
-    #     history_fname: str,
-    #     data_dir: str,
-    #     connected_sides: list[list[Edge]] = [],
-    #     enforce_symmetry: bool = True,
-    #     design_region_resolution: int | list[int] | None = None,
-    # ):
-
-    #     super().__init__(
-    #         resolution=resolution,
-    #         history_fname=history_fname,
-    #         data_dir=data_dir,
-    #         enforce_symmetry=enforce_symmetry,
-    #         n_design_regions=n_design_regions,
-    #     )
-
-    #     self.designX = designX
-    #     self.designY = designY
-
-    #     if len(designX) != len(designY):
-    #         raise ValueError("Must have same number of designX and designY")
-
-    #     if design_region_resolution is None:
-    #         self.design_region_resolution = [2 * resolution for _ in designX]
-    #     elif isinstance(design_region_resolution, int):
-    #         self.design_region_resolution = [design_region_resolution for _ in designX]
-    #     else:
-    #         self.design_region_resolution = design_region_resolution
-
-    #     if len(designX) != len(self.design_region_resolution):
-    #         raise ValueError(
-    #             "Must have same number of design regions as design region resolutions"
-    #         )
-
-    #     nx_design: list[int] = []
-    #     ny_design: list[int] = []
-
-    #     n_design_regions = len(designX)
-
-    #     for i in range(n_design_regions):
-    #         nx_design[i] = round(designX[i] * self.design_region_resolution[i]) + 1
-    #         ny_design[i] = round(designY[i] * self.design_region_resolution[i]) + 1
-
-    #     if len(connected_sides) != n_design_regions and len(connected_sides) != 0:
-    #         raise ValueError(
-    #             "If you have any connected design regions, you muse supply connections for all of them. To indicate that connectivity should not be applied to a region, insert an empty list at that index."
-    #         )
-
-    #     if len(connected_sides) == 0:
-    #         self.connected_sides = [[] for _ in range(n_design_regions)]
-
     @model_validator(mode="before")
     @classmethod
     def fix_design_region_res(cls, data: Any) -> Any:
@@ -312,7 +224,9 @@ class MultiRegionSettings(SimulationSettingsBase):
     def nx_design(self) -> list[int]:
         nx: list[int] = []
         for i in range(self.n_design_regions):
-            nx[i] = int(round(self.designX[i] * self.design_region_resolution[i])) + 1
+            nx.append(
+                int(round(self.designX[i] * self.design_region_resolution[i])) + 1
+            )
         return nx
 
     @computed_field
@@ -320,7 +234,9 @@ class MultiRegionSettings(SimulationSettingsBase):
     def ny_design(self) -> list[int]:
         ny: list[int] = []
         for i in range(self.n_design_regions):
-            ny[i] = int(round(self.designY[i] * self.design_region_resolution[i])) + 1
+            ny.append(
+                int(round(self.designY[i] * self.design_region_resolution[i])) + 1
+            )
         return ny
 
     def get_objective(
@@ -338,7 +254,9 @@ class MultiRegionSettings(SimulationSettingsBase):
         return True
 
     def total_n_raw(self) -> int:
-        return np.sum(self.total_n())
+        # You _must_ wrap this in int() if you are using nlopt. It cares
+        # a lot about it being properly typed.
+        return int(np.sum(self.total_n()))
 
     def apply_symmetry(self, weights: list[NDArray[float64]]) -> WeightsType:
         return weights
@@ -428,7 +346,7 @@ class MultiRegionSettings(SimulationSettingsBase):
         """
         ret: list[NDArray[float64]] = []
         for i in range(self.n_design_regions):
-            ret[i] = np.ravel(obj[i])
+            ret.append(np.ravel(obj[i]))
 
         return np.concatenate(ret)
 
@@ -453,7 +371,7 @@ class MultiRegionSettings(SimulationSettingsBase):
             ret.append(
                 obj[start_idx:stop_idx].reshape(self.nx_design[i], self.ny_design[i])
             )
-            start_idx = stop_idx + 1
+            start_idx = stop_idx
 
         return ret
 
