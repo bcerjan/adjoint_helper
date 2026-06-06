@@ -67,17 +67,16 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
     def apply_symmetry(
         self, weights: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """_summary_
+        """Applies symmetry in the Y direction
 
         Args:
-            weights (npt.NDArray[np.float64]): Weights in raw format (1D array)
+            weights (npt.NDArray[np.float64]): Weights in structured format (2D array)
 
         Returns:
             npt.NDArray[np.float64]: Weights in 2D with symmetry applied
         """
-        weights = weights.reshape(self.nx_design, self.ny_design)
         # we flip LR because numpy uses a different ordering from meep
-        return npa.ravel((npa.fliplr(weights) + weights) / 2)  # type: ignore
+        return (npa.fliplr(weights) + weights) / 2  # type: ignore
 
     def get_masks(self, filter_radius: float) -> list[ah.MaskRegion]:
         """Return border masks for the design region.
@@ -305,7 +304,7 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
 
         # 1 / Mode strength divided by input flux (inverted for minimization)
         def J(alpha: float) -> float:
-            return npa.abs(self.baseline_optimization_value / pow(alpha, 2))  # type: ignore
+            return npa.abs(self.baseline_optimization_value / alpha)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,
