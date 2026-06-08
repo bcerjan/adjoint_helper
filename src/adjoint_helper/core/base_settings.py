@@ -214,6 +214,15 @@ class DesignRegion(BaseModel):
     connected_sides: List[Edge] = []
     weights: npt.NDArray[np.float64] = np.array([])
     mask: MaskRegion | None = None
+    symmetry_func: (
+        Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]] | None
+    ) = Field(
+        default=None,
+        description="Function that enforces symmetry on the weights."
+        " Should take in weights as a 2D array and return them as the same shape."
+        " Note that numpy uses a different ordering, so fliplr corresponds to"
+        " a vertical flip for the weights.",
+    )
 
     @model_validator(mode="after")
     def create_weights(self) -> Self:
@@ -258,7 +267,8 @@ class DesignRegion(BaseModel):
         most operations, numpy uses the 'wrong' direction for things,
         so e.g. if you have a left-right symmetry you specify that using
         np.flipud instead of 'lr'"""
-        pass
+        if self.symmetry_func is not None:
+            self.weights = self.symmetry_func(self.weights)
 
     def unflatten_array(self, arr: RawWeightsType) -> WeightsType:
         return np.reshape(arr, (self.nx_design, self.ny_design))
