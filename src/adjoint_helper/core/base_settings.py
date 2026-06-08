@@ -17,15 +17,31 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from __future__ import annotations
+
+__all__ = ["SimulationSettings", "OptimizationSettings"]
+
+import json
+import hashlib
 import numpy as np
 import numpy.typing as npt
-from ..vendors.meep.filters import get_conic_radius_from_eta_e  # type: ignore
+from autograd import tensor_jacobian_product, grad, numpy as npa
+from ..vendors.meep.filters import (
+    get_conic_radius_from_eta_e,
+    conic_filter,
+    smoothed_projection,
+    tanh_projection,
+    constraint_solid,
+    constraint_void,
+)  # type: ignore
+from ..vendors.meep.connectivity import constraint_connectivity
+
 from .defs import (
     PhysicsObjective,
     MaskRegion,
     WeightsType,
     RawWeightsType,
     ConstraintReturnType,
+    Edge,
 )
 
 from pathlib import Path
@@ -39,12 +55,12 @@ from pydantic import (
     model_validator,
     computed_field,
 )
-from typing import Any, Union, TypeVar, Callable
+from typing import Any, Callable, List
+from typing_extensions import Self
 import base64
 import io
 
 
-S = TypeVar("S", bound="SimulationSettingsBase")
 DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 
 
@@ -163,7 +179,7 @@ class OptimizationSettings(BaseModel, ABC):
         self._use_epsavg = val
 
     @abstractmethod
-    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
+    def optimize(self, settings: SimulationSettings) -> WeightsType:
         pass
 
     @field_serializer("weights")
@@ -189,7 +205,254 @@ class OptimizationSettings(BaseModel, ABC):
         return v
 
 
-class SimulationSettingsBase(BaseModel, ABC):
+class DesignRegion(BaseModel):
+    x_size: float
+    y_size: float
+    resolution: int
+    medium_0: Any
+    medium_1: Any
+    connected_sides: List[Edge] = []
+    weights: npt.NDArray[np.float64] = np.array([])
+    mask: MaskRegion | None = None
+
+    @model_validator(mode="after")
+    def create_weights(self) -> Self:
+        if len(self.weights) == 0:
+            self.weights = np.ones(self.total_n) * 0.5
+        return self
+
+    @computed_field
+    @property
+    def do_connectivity(self) -> bool:
+        return len(self.connected_sides) > 0
+
+    @computed_field
+    @property
+    def nx_design(self) -> int:
+        return int(round(self.x_size * self.resolution)) + 1
+
+    @computed_field
+    @property
+    def ny_design(self) -> int:
+        return int(round(self.y_size * self.resolution)) + 1
+
+    @computed_field
+    @property
+    def total_n(self) -> int:
+        return self.nx_design * self.ny_design
+
+    @computed_field
+    @property
+    def weights_raw(self) -> npt.NDArray[np.float64]:
+        """Returns weights reshaped into the 'real' shape"""
+        return self.weights.flatten()
+
+    def apply_mask(self) -> None:
+        if self.mask is None:
+            return
+        self.weights[self.mask.locations] = self.mask.value
+
+    def apply_symmetry(self) -> None:
+        """If this design region should have some kind of enforced
+        symmetry, specify how to apply that here. Note that for
+        most operations, numpy uses the 'wrong' direction for things,
+        so e.g. if you have a left-right symmetry you specify that using
+        np.flipud instead of 'lr'"""
+        pass
+
+    def unflatten_array(self, arr: RawWeightsType) -> WeightsType:
+        return np.reshape(arr, (self.nx_design, self.ny_design))
+
+    def filter_and_project(self, optimization: OptimizationSettings) -> WeightsType:
+        """Returns the weights as a 2D array in the 'real' shape"""
+        # TODO: Possible store all the stuff from optimizationsettings
+        # in this class so you could (in theory) customize per design
+        # region. Would also need to move constraints into this class as
+        # methods.
+        weights_filtered = conic_filter(  # type: ignore
+            self.weights,  # type: ignore
+            optimization.filter_radius,
+            self.x_size,
+            self.y_size,
+            [self.resolution],
+        )
+
+        if optimization.use_epsavg:
+            if optimization.use_smoothed_projection:
+                weights_projected = smoothed_projection(  # type: ignore
+                    weights_filtered,
+                    optimization.sigmoid_bias,
+                    optimization.sigmoid_threshold,
+                    self.resolution,
+                )
+            else:
+                return weights_filtered  # type: ignore
+        else:
+            weights_projected = tanh_projection(  # type: ignore
+                weights_filtered,
+                optimization.sigmoid_bias,
+                optimization.sigmoid_threshold,
+            )
+
+        return weights_projected  # type: ignore
+
+    def backpropagate(
+        self, gradient: npt.NDArray[np.float64], optimization: OptimizationSettings
+    ) -> None:
+        """Applies tensor_jacobian_product and updates the gradient in-place.
+        expects gradient to be shaped into the correct format
+        """
+
+        gradient[:] = tensor_jacobian_product(self.filter_and_project, 0)(
+            optimization, gradient
+        )
+
+    def line_width_and_spacing_constraint(
+        self,
+        resolution: int,
+        optimization: OptimizationSettings,
+    ) -> ConstraintReturnType:
+        """Constraint function for the minimum line width and spacing.
+
+        Args:
+            resolution (int): Resolution of the main grid
+            optimization (OptimizationSettings): Optimization information
+
+        Returns:
+            Tuple[float, npt.NDArray[np.float64]]: The value of the constraint function (a scalar) and the gradient.
+        """
+
+        # Possibly all need to be added to OptimizationSettings
+        # Probably in a sub-class or something.
+        a1 = 1e-3  # hyper parameter (primary)
+        b1 = 0  # hyper parameter (secondary)
+        # hyper parameter (constant factor and exponent)
+        c0 = 1e6 * (optimization.filter_radius * 1 / resolution) ** 4
+
+        def filter_func(
+            a: npt.NDArray[np.float64],
+        ) -> npt.NDArray[np.float64]:
+            return conic_filter(  # type: ignore
+                x=a,
+                radius=optimization.filter_radius,
+                Lx=self.x_size,
+                Ly=self.y_size,
+                resolution=[self.resolution],
+            )
+
+        def threshold_func(
+            a: npt.NDArray[np.float64],
+        ) -> npt.NDArray[np.float64]:
+            return tanh_projection(  # type: ignore
+                a, optimization.sigmoid_bias, optimization.sigmoid_threshold
+            )
+
+        def M1(a: npt.NDArray[np.float64]) -> float:
+            return constraint_solid(  # type: ignore
+                a, c0, optimization.sigmoid_erosion, filter_func, threshold_func, 1
+            )
+
+        def M2(a: npt.NDArray[np.float64]) -> float:
+            return constraint_void(  # type: ignore
+                a, c0, optimization.sigmoid_dilation, filter_func, threshold_func, 1
+            )
+
+        g1 = grad(M1)(self.weights)  # type: ignore
+        g2 = grad(M2)(self.weights)  # type: ignore
+
+        gradi = g1 + g2  # type: ignore
+
+        t1 = (M1(self.weights) - b1) / a1
+        t2 = (M2(self.weights) - b1) / a1
+
+        return npa.max([t1, t2]), gradi.flatten()  # type: ignore
+
+    def connectivity_constraint(
+        self,
+        optimization: OptimizationSettings,
+    ) -> ConstraintReturnType:
+        """Applies connectivity constraint. Empty list of edges signals to not apply
+        the constraint.
+
+        Args:
+            design_region (DesignRegion): Instance of design region we are applying the constraint
+                to.
+            optimization (OptimizationSettings):OptimizationSettings containing optimization parameters
+
+        Returns:
+            Tuple[float, npt.NDArray[np.float64]]: Result from connectivity -- negative
+                indicates connected as well as the gradient
+        """
+
+        if not self.do_connectivity:
+            return (0, self.weights)
+
+        proj = self.filter_and_project(optimization=optimization)
+
+        aggT = np.ones_like(proj) * np.inf
+        aggGrad = np.zeros_like(proj)
+
+        # These are the hyperparameters for our connectivity constraint. Maybe
+        # should be moved into OptimizationSettings
+        p = 3.0
+        cond_s = 1e4
+        thresh = 50
+
+        # Need to store f0 and dJ_du per-rotation, then return the max value of f0 and
+        # map the dJ_du's based on if they are connected or not yet.
+        # Not sure exactly how to do that -- if positive f0(/T?) for all rotations, pick
+        # largest dJ_du for that location
+        # for i in range(0,4):
+        for i in self.connected_sides:
+            rot = npa.rot90(proj, i.value).flatten()  # type: ignore
+            T, _, dJ_du = constraint_connectivity(  # type: ignore
+                rot,  # type: ignore
+                self.nx_design,
+                1,
+                self.ny_design,
+                p=p,
+                cond_s=cond_s,
+                thresh=thresh,
+            )
+
+            # Need to un-rotate to preserve orientation
+            # T = npa.rot90(T.reshape(settings.nx_design, settings.ny_design), -i)
+            # dJ_du = npa.rot90(dJ_du.reshape(settings.nx_design, settings.ny_design), -i)
+            T = T.reshape(self.nx_design, self.ny_design)  # type: ignore
+            dJ_du = dJ_du.reshape(self.nx_design, self.ny_design)  # type: ignore
+
+            cond = T < aggT  # type: ignore
+            aggT = npa.where(cond, T, aggT)  # type: ignore
+            aggGrad = npa.where(cond, dJ_du, aggGrad)  # type: ignore
+
+        # This is copied from the mpa.constraint_connectivity code as we need the
+        # FOM for our assembled temperature, not raw temp from any rotation or
+        # combination of rotations
+        def heat_func(x: npt.NDArray[np.float64]) -> float:
+            return npa.sum(x**p) ** (1 / p) / thresh  # type: ignore
+
+        f0 = heat_func(aggT) - 1  # type: ignore
+
+        aggGrad = npa.squeeze(aggGrad)  # type: ignore
+
+        temp = self.backpropagate(gradient=aggGrad, optimization=optimization)
+
+        optimization.connectivity.append(f0)
+        return f0, temp.flatten()  # type: ignore
+
+    def get_fingerprint(self) -> str:
+        core_params: dict[str, Any] = {
+            "resolution": self.resolution,
+            "total_n": self.total_n,
+            "x_size": self.x_size,
+            "y_size": self.y_size,
+        }
+
+        param_str = json.dumps(core_params, sort_keys=True)
+        return hashlib.sha3_256(param_str.encode()).hexdigest()
+
+
+class SimulationSettings(BaseModel, ABC):
     """
     Class to store all simulation parameters for save/load as well as passing
     to optimization algorithms. This version of the class is intended for internal
@@ -197,7 +460,8 @@ class SimulationSettingsBase(BaseModel, ABC):
     instead.
     """
 
-    n_design_regions: int = 1
+    n_design_frequencies: int = 1
+    design_regions: List[DesignRegion]
     resolution: int
     baseline_optimization_value: float | list[float] = -np.inf
     needs_baseline: bool = True
@@ -216,22 +480,30 @@ class SimulationSettingsBase(BaseModel, ABC):
 
         return data  # type: ignore
 
-    @abstractmethod
+    @model_validator(mode="after")
+    def check_design_regions(self) -> Self:
+        if len(self.design_regions) == 0:
+            raise ValueError("Must have at least one DesignRegion!")
+        return self
+
+    @computed_field
+    @property
+    def n_design_regions(self) -> int:
+        return len(self.design_regions)
+
     def is_multi_region(self) -> bool:
-        pass
+        return len(self.design_regions) > 1
 
-    @abstractmethod
-    def total_n(self) -> Union[list[int], int]:
-        pass
-
-    @abstractmethod
-    def total_n_raw(self) -> int:
+    def total_n(self) -> int:
         """Total N for all design regions
 
         Returns:
             int: total number of variables to optimize for in all design region(s)
         """
-        pass
+        sum = 0
+        for r in self.design_regions:
+            sum += r.total_n
+        return sum
 
     def calculate_normalization(self) -> None:
         if self.needs_baseline:
@@ -262,8 +534,6 @@ class SimulationSettingsBase(BaseModel, ABC):
         will be `filter_and_project`'ed before they are sent to your function,
         so you should not do that internally.
 
-        This
-
         Args:
             optimization (OptimizationSettings): Everything needed for only the
             immediate simulation / optimization step. Not the auxillary stuff
@@ -275,54 +545,63 @@ class SimulationSettingsBase(BaseModel, ABC):
         """
         pass
 
-    def get_masks(self, filter_radius: float) -> list[MaskRegion] | MaskRegion | None:
-        """Get the masks (forced values) for the design variables. If you have
-        more than one design region and have a mask for at least one of them,
-        you must supply masks for all of them (even if they are set to False
-        everywhere). This function should return the masks in the same order
-        as the design regions.
-
-        Args:
-            filter_radius (float): Filter radius to apply for linewidth and
-                spacing constraint to make sure the masks satisfy it as well.
-
-        Returns:
-            list[MaskRegion] | MaskRegion | None: Locations where values are forced
-        """
-        return None
-
-    @abstractmethod
-    def weightslike_to_raw(self, obj: Any) -> RawWeightsType:
-        return np.concatenate(obj)
-
-    @abstractmethod
-    def raw_to_weightslike(self, obj: RawWeightsType) -> WeightsType:
-        pass
-
-    @abstractmethod
     def filter_and_project(
-        self, weights: WeightsType, optimization: OptimizationSettings
+        self,
+        optimization: OptimizationSettings,
     ) -> RawWeightsType:
-        pass
+        """Filters and projects weights for all design regions.
+        Returns the flattened array of weights for all of them."""
 
-    @abstractmethod
+        ret = np.zeros(self.total_n())
+        start = 0
+        for r in self.design_regions:
+            stop = start + r.total_n
+            ret[start:stop] = r.filter_and_project(optimization=optimization)
+            start += stop
+
+        return ret
+
     def line_width_and_spacing(
-        self, weights: WeightsType, optimization: OptimizationSettings
+        self, optimization: OptimizationSettings
     ) -> ConstraintReturnType:
-        pass
+        grads = np.zeros(self.total_n())
+        val = 0  # TODO: possibly make this a list. Or use inequality constraints
+        # to enforce the rules for multiple design regions...
+        start = 0
+        for r in self.design_regions:
+            stop = start + r.total_n
+            v, g = r.line_width_and_spacing_constraint(
+                resolution=self.resolution, optimization=optimization
+            )
+            val += v
+            grads[start:stop] = g
+            start = stop
+        return (val, grads)
 
-    @abstractmethod
     def connectivity_constraint(
-        self, weights: WeightsType, optimization: OptimizationSettings
+        self, optimization: OptimizationSettings
     ) -> ConstraintReturnType:
-        pass
+        grads = np.zeros(self.total_n())
+        val = 0  # TODO: possibly make this a list. Or use inequality constraints
+        # to enforce the rules for multiple design regions...
+        start = 0
+        for r in self.design_regions:
+            stop = start + r.total_n
+            v, g = r.connectivity_constraint(optimization=optimization)
+            val += v
+            grads[start:stop] = g
+            start = stop
+        return (val, grads)
 
-    @abstractmethod
-    def apply_symmetry(self, weights: Any) -> WeightsType:
-        """weights should be WeightsType, but we can't specify that
-        without a lot of headache.
-        """
-        return weights
+    def apply_symmetry(self) -> None:
+        """Applies symmetry to all design regions internally."""
+        for r in self.design_regions:
+            r.apply_symmetry()
+
+    def apply_masks(self) -> None:
+        """Applies masks to all design regions internally."""
+        for r in self.design_regions:
+            r.apply_mask()
 
     @abstractmethod
     def get_objective(
@@ -331,9 +610,19 @@ class SimulationSettingsBase(BaseModel, ABC):
     ) -> PhysicsObjective:
         return get_physics_objective(self, optimization)
 
-    @abstractmethod
     def get_fingerprint(self) -> str:
-        pass
+        core_params: dict[str, Any] = {
+            "resolution": self.resolution,
+            "total_n": self.total_n(),
+            "n_design_regions": self.n_design_regions,
+        }
+
+        idx = 0
+        for r in self.design_regions:
+            core_params[f"region{idx}"] = r.get_fingerprint()
+
+        param_str = json.dumps(core_params, sort_keys=True)
+        return hashlib.sha3_256(param_str.encode()).hexdigest()
 
 
 RegistryKey = tuple[type, type]
@@ -360,7 +649,7 @@ def register_physics_objective(sim_type: type, opt_type: type):
 
 
 def get_physics_objective(
-    settings: SimulationSettingsBase, optimization: OptimizationSettings
+    settings: SimulationSettings, optimization: OptimizationSettings
 ) -> PhysicsObjective:
     """
     The Router. Uses 'isinstance' and MRO (Method Resolution Order)

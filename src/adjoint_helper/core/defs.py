@@ -25,9 +25,11 @@ __all__ = [
     "RawWeightsType",
 ]
 
+from autograd import tensor_jacobian_product
 import numpy as np
 import numpy.typing as npt
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable, List
+from pydantic import BaseModel, computed_field
 from enum import Enum
 
 
@@ -91,16 +93,67 @@ class PhysicsObjective(Protocol):
     def __call__(self, weights: RawWeightsType) -> ObjectiveReturn: ...
 
 
-class MaskRegion:
+class MaskRegion(BaseModel):
+    """Definitions for forced values for design variables.
+
+    Args:
+        locations (npt.NDArray[np.bool_]): Boolean array for where the mask
+            should be enforced. Must be the same size as the design region.
+        value (float): What value should be enforced at these positions?
+            Should be in the range [0, 1] (inclusive)
+    """
+
     locations: npt.NDArray[np.bool_]  # 1 where value should be enforced, 0 otherwise
     value: float  # value to enforce at positions, should be in [0, 1]
 
-    def __init__(self, locations: npt.NDArray[np.bool_], value: float):
-        """Definitions for forced values for design variables.
 
-        Args:
-            locations (npt.NDArray[np.bool_]): _description_
-            value (float): _description_
-        """
-        self.locations = locations
-        self.value = value
+class DesignRegion(BaseModel):
+    x_size: float
+    y_size: float
+    resolution: int
+    medium_0: Any
+    medium_1: Any
+    connected_sides: List[Edge] = []
+    weights: npt.NDArray[np.float64]
+
+    @computed_field
+    @property
+    def do_connectivity(self) -> bool:
+        return len(self.connected_sides) > 0
+
+    @computed_field
+    @property
+    def nx_design(self) -> int:
+        return int(round(self.x_size * self.resolution)) + 1
+
+    @computed_field
+    @property
+    def ny_design(self) -> int:
+        return int(round(self.y_size * self.resolution)) + 1
+
+    @computed_field
+    @property
+    def total_n(self) -> int:
+        return self.nx_design * self.ny_design
+
+    def filter_and_project(self, optimization: OptimizationSettings) -> RawWeightsType:
+        # TODO: Possible store all the stuff from optimizationsettings
+        # in this class so you could (in theory) customize per design
+        # region. Would also need to move constraints into this class as
+        # methods.
+        return filter_and_project_single(
+            weights=self.weights,
+            design_region_resolution=self.resolution,
+            x_size=self.x_size,
+            y_size=self.y_size,
+            optimization=optimization,
+        )
+
+    def backpropagate(
+        self, gradient: npt.NDArray[np.float64], optimization: OptimizationSettings
+    ) -> None:
+        """Applies tensor_jacobian_product and updates the gradient in-place"""
+
+        gradient[:] = tensor_jacobian_product(self.filter_and_project, 0)(
+            optimization, gradient
+        )
