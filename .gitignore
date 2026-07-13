@@ -46,3 +46,6 @@ ipython_config.py
 
 # Test output
 tests/output/
+
+# Example output
+examples/output/
