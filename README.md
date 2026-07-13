@@ -8,34 +8,14 @@
 ## Features
 
 * **Simplified Workflow:** Automate the boilerplate involved in adjoint sensitivity calculations.
-* **Multi-Backend Ready:** Designed to work with MEEP today, with support for other simulation engines coming soon.
+* **Multi-Backend Ready:** Works with any program that returns gradients from your simulation (MEEP, Tidy3D, Legume, Elmer, ...)
 * **Optimizer Integration:** Seamless connection to `nlopt` and `optax` for gradient-based optimization.
-* **Parameter Management:** Easy handling of geometric and material parameters during optimization loops.
+`AdjointDiffusion` as an optimization method is coming soon (hopefully)
 
 ## Installation
 
-Because this package relies on **MEEP** (at present), the recommended way to install `adjoint_helper` is via **Conda**.
-
-### 1. Create a Conda Environment (Recommended)
-
-First, create an environment with the necessary simulation backends:
-
-```bash
-# Create environment with MEEP and optimization tools
-conda create -n adjoint_env python=3.13 -c conda-forge pymeep nlopt
-conda activate adjoint_env
-
-# Use if you want parallel meep
-conda create -n adjoint_env_parallel python=3.13 -c conda-forge pymeep=*=mpi_mpich_* nlopt
-conda activate adjoint_env_parallel
-```
-(meep requires python < 3.14 currently.
-nlopt is optional if you only want to use `optax` methods)
-
-### 2. Install adjoint_helper
-Once your environment is set up, you can install the package:
-
 Via Pip (with Extras):
+
 ```bash
 # Without any other solvers
 pip install adjoint_helper
@@ -43,16 +23,28 @@ pip install adjoint_helper
 # With optax
 pip install adjoint_helper[optax]
 
-# With AdointDiffusion
+# With AdointDiffusion (not available yet)
 pip install torch torchvision # possibly with --index-url=XXXXX, see below
 pip install adjoint_helper[diffusion]
 ```
+
+If you want to use [nlopt](https://nlopt.readthedocs.io/en/latest/) you should create a conda environment first and then use it to install pip so you can install adjoint_helper:
+
+```bash
+conda crate -n adjoint_helper
+conda install -c conda-forge nlopt
+conda install pip
+pip install adjoint_helper
+```
+
 If you are running with `AdjointDiffusion` you also need to install pytorch
 following the guidelines [here](https://pytorch.org/get-started/locally/) if
-you want to use a GPU to accelerate it.
+you want to use a GPU to accelerate it
 ---
+
 ## Quick Start
-The first step is to define a custom `SimulationSettings` class and define 
+
+The first step is to define a custom `SimulationSettings` class and define
 `create_geometry()` and `create_opt()` methods for it. From there, running an
 optimization is as simple as:
 
@@ -66,5 +58,4 @@ optimization = OptaxOptimizationSettings() # the defualts are sensible, uses `ad
 optimization.optimize(settings)
 ```
 
-There is an extended example in the `tests` directory that shows a more complicated
-system and demonstrates how to subclass for your specific geometry.
+Clearly, this elides pretty much all the interesting pieces, so look in the `examples` directory for full examples that demonstrate the use of the package.
