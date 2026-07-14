@@ -18,14 +18,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from ..core.base_settings import OptimizationSettings, SimulationSettingsBase
+from ..core.base_settings import OptimizationSettings, SimulationSettings
 from ..core.optimization_history import OptimizationHistory
 from ..core.defs import MaskRegion, RawWeightsType, WeightsType
 
 
 def save_output(
-    weights: WeightsType,
-    settings: SimulationSettingsBase,
+    settings: SimulationSettings,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
     binarize: bool = False,
@@ -34,8 +33,6 @@ def save_output(
     Stores the current optimization status and an image of the current design
     at the given path
 
-    :param weights: Weights for the design region(s)
-    :type weights: npt.NDArray[np.float64]
     :param settings: SimulationSettings object that contains the information
     :type settings: SimulationSettings
     :param optimization: OptimizationSettings for this optimization run
@@ -51,29 +48,18 @@ def save_output(
     """
     # Save the unmapped weights and a bitmap image of the design weights
 
-    s_weights = settings.weightslike_to_raw(weights)
-
+    settings.apply_masks()
+    settings.apply_symmetry()
+    s_weights = []
     if binarize:
-        binarize_weights(s_weights, settings, optimization)
+        s_weights = settings.binarize_weights(optimization)
+    else:
+        s_weights = settings.filter_and_project(optimization=optimization)
 
-    organized = settings.raw_to_weightslike(s_weights)
-
-    optimal_design_weights = settings.filter_and_project(
-        organized,
-        optimization,
-    )
-
-    p_weights = settings.apply_symmetry(
-        settings.raw_to_weightslike(optimal_design_weights)
-    )
-
-    if not isinstance(p_weights, list):
-        p_weights = [p_weights]
-
-    for i in range(settings.n_design_regions):
+    for i, w in enumerate(s_weights):
         fig, ax = plt.subplots()  # type: ignore
         ax.imshow(  # type: ignore
-            p_weights[i],
+            w.T,
             cmap="binary",
             interpolation="none" if not binarize else "spline36",
             alpha=1.0,
@@ -82,7 +68,7 @@ def save_output(
 
         fig.savefig(  # type: ignore
             settings.data_dir
-            / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}.png",
+            / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}_region{i}.png",
             dpi=150,
             bbox_inches="tight",
         )
@@ -94,7 +80,7 @@ def save_output(
         )
         np.savetxt(
             settings.data_dir / fname,
-            p_weights[i],
+            w,
             fmt="%4.2f",
             delimiter=",",
         )
@@ -111,69 +97,3 @@ def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> 
     plt.xlabel("Iteration")  # type: ignore
     plt.ylabel("FOM")  # type: ignore
     plt.savefig(history_fpath + "FOM.png")  # type: ignore
-
-
-def binarize_weights(
-    weights: RawWeightsType,
-    settings: SimulationSettingsBase,
-    optimization: OptimizationSettings,
-) -> None:
-    """
-    Updates weights in-place to be binary.
-
-    :param weights: Current weights to be binarized
-    :type weights: npt.NDArray[np.float64]
-    :param settings: Simulation Settings for these weights
-    :type settings: SimulationSettings
-    :param optimization: Optimization Settings for these weights
-    :type optimization: OptimizationSettings
-    """
-    sigmoid = optimization.sigmoid_bias
-    optimization.sigmoid_bias = np.inf
-    weights[:] = np.round(
-        np.sign(settings.filter_and_project(weights, optimization) - 0.5) / 2 + 0.5
-    )
-
-    optimization.sigmoid_bias = sigmoid
-
-
-def apply_masks(
-    masks: MaskRegion | list[MaskRegion] | None,
-    weights: RawWeightsType,
-    multi_region: bool,
-):
-    if masks is not None:
-        if not isinstance(masks, list):
-            masks = [masks]
-
-        if len(masks) == 0:
-            return
-
-        if multi_region:
-            locs = np.concatenate([np.ravel(m.locations) for m in masks])
-            vals = np.concatenate([m.value for m in masks])
-
-            weights[locs] = vals
-
-        else:
-            for mask in masks:
-                weights[np.ravel(mask.locations)] = mask.value
-
-
-def wrapped_filter_and_project(
-    weights: RawWeightsType,
-    settings: SimulationSettingsBase,
-    optimization: OptimizationSettings,
-) -> RawWeightsType:
-    """Wrapper to allow passing a list of arrays through tensor_jacobian_product
-
-    Args:
-        weights (RawWeightsType): Weights as a 1D array
-        settings (SimulationSettingsBase): Settings object
-        optimization (OptimizationSettings): Optimization object
-
-    Returns:
-        RawWeightsType: Flattened 1D array after the tensor product
-    """
-    w = settings.raw_to_weightslike(weights)
-    return settings.filter_and_project(w, optimization)
