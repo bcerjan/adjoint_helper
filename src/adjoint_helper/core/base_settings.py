@@ -50,15 +50,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    field_serializer,
-    field_validator,
     model_validator,
     computed_field,
 )
 from typing import Any, Callable, List
 from typing_extensions import Self
-import base64
-import io
 
 
 DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
@@ -74,7 +70,7 @@ class OptimizationSettings(BaseModel, ABC):
 
     obj: list[float] = []
     data: list[float] = []
-    weights: list[npt.NDArray[np.float64]] = Field(default_factory=list)  # type: ignore
+    weights: list[WeightsType] = Field(default_factory=list)  # type: ignore
     grad: list[np.float64] = []
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
@@ -179,44 +175,44 @@ class OptimizationSettings(BaseModel, ABC):
         self._use_epsavg = val
 
     @abstractmethod
-    def optimize(self, settings: SimulationSettings) -> WeightsType:
+    def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
         pass
 
-    @field_serializer("weights")
-    def serialize_weights(self, weights: list[npt.NDArray[np.float64]], _) -> list[str]:
-        """Converts list of arrays to list of base64 strings for JSON."""
-        encoded_list: list[str] = []
-        for arr in weights:
-            buf = io.BytesIO()
-            np.save(buf, arr)
-            encoded_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
-        return encoded_list
-
-    @field_validator("weights", mode="before")
-    @classmethod
-    def deserialize_weights(cls, v: Any) -> list[npt.NDArray[np.float64]]:
-        """Converts base64 strings back to numpy arrays."""
-        if isinstance(v, list):
-            decoded_list: list[npt.NDArray[np.float64]] = []
-            for s in v:  # type: ignore
-                buf = io.BytesIO(base64.b64decode(s))  # type: ignore
-                decoded_list.append(np.load(buf))
-            return decoded_list
-        return v
+    # @field_serializer("weights")
+    # def serialize_weights(self, weights: list[npt.NDArray[np.float64]], _) -> list[str]:
+    #     """Converts list of arrays to list of base64 strings for JSON."""
+    #     encoded_list: list[str] = []
+    #     for arr in weights:
+    #         buf = io.BytesIO()
+    #         np.save(buf, arr)
+    #         encoded_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
+    #     return encoded_list
+    #
+    # @field_validator("weights", mode="before")
+    # @classmethod
+    # def deserialize_weights(cls, v: Any) -> list[npt.NDArray[np.float64]]:
+    #     """Converts base64 strings back to numpy arrays."""
+    #     if isinstance(v, list):
+    #         decoded_list: list[npt.NDArray[np.float64]] = []
+    #         for s in v:  # type: ignore
+    #             buf = io.BytesIO(base64.b64decode(s))  # type: ignore
+    #             decoded_list.append(np.load(buf))
+    #         return decoded_list
+    #     return v
 
 
 class DesignRegion(BaseModel):
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
     x_size: float
     y_size: float
     resolution: int
     medium_0: Any
     medium_1: Any
     connected_sides: List[Edge] = []
-    weights: npt.NDArray[np.float64] = np.array([])
+    weights: WeightsType = np.array([])
     mask: MaskRegion | None = None
-    symmetry_func: (
-        Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]] | None
-    ) = Field(
+    symmetry_func: Callable[[WeightsType], WeightsType] | None = Field(
         default=None,
         description="Function that enforces symmetry on the weights."
         " Should take in weights as a 2D array and return them as the same shape."
@@ -252,7 +248,7 @@ class DesignRegion(BaseModel):
 
     @computed_field
     @property
-    def weights_raw(self) -> npt.NDArray[np.float64]:
+    def weights_raw(self) -> RawWeightsType:
         """Returns weights reshaped into the 'real' shape"""
         return self.weights.flatten()
 
@@ -307,7 +303,7 @@ class DesignRegion(BaseModel):
         return weights_projected  # type: ignore
 
     def backpropagate(
-        self, gradient: npt.NDArray[np.float64], optimization: OptimizationSettings
+        self, gradient: WeightsType, optimization: OptimizationSettings
     ) -> None:
         """Applies tensor_jacobian_product and updates the gradient in-place.
         expects gradient to be shaped into the correct format
@@ -329,7 +325,7 @@ class DesignRegion(BaseModel):
             optimization (OptimizationSettings): Optimization information
 
         Returns:
-            Tuple[float, npt.NDArray[np.float64]]: The value of the constraint function (a scalar) and the gradient.
+            Tuple[float, RawWeightsType: The value of the constraint function (a scalar) and the gradient.
         """
 
         # Possibly all need to be added to OptimizationSettings
@@ -390,12 +386,12 @@ class DesignRegion(BaseModel):
             optimization (OptimizationSettings):OptimizationSettings containing optimization parameters
 
         Returns:
-            Tuple[float, npt.NDArray[np.float64]]: Result from connectivity -- negative
+            Tuple[float, RawWeightsType: Result from connectivity -- negative
                 indicates connected as well as the gradient
         """
 
         if not self.do_connectivity:
-            return (0, self.weights)
+            return (-1, np.zeros(self.weights.flatten().shape))
 
         proj = self.filter_and_project(optimization=optimization)
 
@@ -470,7 +466,9 @@ class SimulationSettings(BaseModel, ABC):
     instead.
     """
 
-    n_design_frequencies: int = 1
+    n_design_parameters: int = (
+        1  # How many 'things' are we optimizing for? Freqs, targets...
+    )
     design_regions: List[DesignRegion]
     resolution: int
     baseline_optimization_value: float | list[float] = -np.inf
@@ -555,20 +553,36 @@ class SimulationSettings(BaseModel, ABC):
         """
         pass
 
-    def filter_and_project(
-        self,
-        optimization: OptimizationSettings,
-    ) -> RawWeightsType:
-        """Filters and projects weights for all design regions.
-        Returns the flattened array of weights for all of them."""
+    def update_weights(self, new_weights: List[WeightsType]) -> None:
+        if len(new_weights) != self.n_design_regions:
+            raise ValueError(
+                "Must supply same number of weights as there are design regions."
+            )
 
-        ret = np.zeros(self.total_n())
+        for i, r in enumerate(self.design_regions):
+            r.weights[:] = new_weights[i]
+
+    def vector_to_arrays(self, vec: RawWeightsType) -> List[WeightsType]:
+        """Split the vector into pieces for each design region"""
+        ret = []
         start = 0
         for r in self.design_regions:
             stop = start + r.total_n
-            ret[start:stop] = r.filter_and_project(optimization=optimization)
+            ret.append(r.unflatten_array(vec[start:stop]))
             start += stop
 
+        return ret
+
+    def filter_and_project(
+        self,
+        optimization: OptimizationSettings,
+    ) -> List[WeightsType]:
+        """Filters and projects weights for all design regions.
+        Returns the flattened array of weights for all of them."""
+
+        ret = []
+        for r in self.design_regions:
+            ret.append(r.filter_and_project(optimization=optimization))
         return ret
 
     def line_width_and_spacing(
@@ -605,13 +619,26 @@ class SimulationSettings(BaseModel, ABC):
 
     def apply_symmetry(self) -> None:
         """Applies symmetry to all design regions internally."""
-        for r in self.design_regions:
-            r.apply_symmetry()
+        if self.enforce_symmetry:
+            for r in self.design_regions:
+                r.apply_symmetry()
 
     def apply_masks(self) -> None:
         """Applies masks to all design regions internally."""
         for r in self.design_regions:
             r.apply_mask()
+
+    def binarize_weights(self, optimization: OptimizationSettings) -> List[WeightsType]:
+        """Returns a binarized version of the internal weights."""
+
+        bias = optimization.sigmoid_bias
+        optimization.sigmoid_bias = np.inf
+        ret = []
+        for r in self.design_regions:
+            ret.append(r.filter_and_project(optimization=optimization))
+
+        optimization.sigmoid_bias = bias
+        return ret
 
     @abstractmethod
     def get_objective(

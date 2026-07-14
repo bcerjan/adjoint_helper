@@ -19,12 +19,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from pydantic import BaseModel, computed_field
 from pathlib import Path
 
-from ..core.base_settings import SimulationSettingsBase, OptimizationSettings
+from ..core.base_settings import SimulationSettings, OptimizationSettings
 
 
 class OptimizationHistory(BaseModel):
     optimization: OptimizationSettings
-    settings: SimulationSettingsBase
+    settings: SimulationSettings
 
     @computed_field
     @property
@@ -38,7 +38,7 @@ class OptimizationHistory(BaseModel):
 
     @classmethod
     def load_from_json(
-        cls, fpath: Path, current_settings: SimulationSettingsBase, strict: bool = True
+        cls, fpath: Path, current_settings: SimulationSettings, strict: bool = True
     ) -> "OptimizationHistory | None":
 
         try:

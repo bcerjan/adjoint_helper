@@ -26,10 +26,16 @@ __all__ = [
 ]
 
 import numpy as np
-import numpy.typing as npt
-from typing import Protocol, runtime_checkable
-from pydantic import BaseModel
+from typing import (
+    Protocol,
+    Tuple,
+    runtime_checkable,
+    List,
+    Annotated,
+)
+from pydantic import BaseModel, ConfigDict
 from enum import Enum
+from .pydantic_defs import BoolArray2D, FloatArray1D, FloatArray2D
 
 
 # NEEDS TESTING TO VERIFY THESE ARE CORRECT
@@ -40,14 +46,15 @@ class Edge(Enum):
     RIGHT = 3
 
 
-ObjectiveReturn = tuple[list[float], "RawWeightsType"]
-
-
-type WeightsType = np.ndarray[tuple[int, int], np.dtype[np.float64]]
+type WeightsType = Annotated[
+    np.ndarray[Tuple[int, int], np.dtype[np.float64]], FloatArray2D
+]
 """Weights laid out 'correctly' (that is, a 2D matrix).
 """
 
-type RawWeightsType = np.ndarray[tuple[int], np.dtype[np.float64]]
+type RawWeightsType = Annotated[
+    np.ndarray[tuple[int], np.dtype[np.float64]], FloatArray1D
+]
 """Weights that have been flattened into 1D. Could be either for a single
 design region or for several that have been concatenated.
 """
@@ -56,26 +63,26 @@ type ConstraintReturnType = tuple[float, RawWeightsType]
 """Return type for constraints (linewidth/connectivity)
 """
 
+ObjectiveReturn = tuple[list[float], RawWeightsType]
+
 
 @runtime_checkable
 class PhysicsObjective(Protocol):
     """
-    This is a function that will be called to convert a list of weights (one per
-    design region) into objective values and gradients. It's a bit of a doozy,
+    This is a function that will be called to convert a concatenated 1D vector of weights
+    into objective values and gradients. It's a bit of a doozy,
     unfortunately, because it returns a lot of information for the optimization
     process.
 
-    Succinctly it returns: list[weights] -> (list[objective_val], list[list[gradient]])
+    Succinctly it returns: (list[objective_val], list[list[gradient]])
     PhysicsObjective takes in a list of weights (per design region) and returns
     a tuple containing a list of objective values (per design region) and a list
-    by objective function of lists by design region of 2D arrays of gradients (by
-    frequency).
+    by objective function of lists by design region of 2D arrays of gradients.
 
     So it's: ()
 
     Args:
-        weights (list[npt.NDArray[np.float64]]): A list of weights per design region
-            as 1D arrays.
+        weights (RawWeightsType): concatenated 1D array of weights for all design regions.
 
         settings (SimulationSettings): Simulation settings needed for calculating
             gradients / setting up the physical domain
@@ -90,7 +97,7 @@ class PhysicsObjective(Protocol):
             -> design_regions -> frequencies/parameters
     """
 
-    def __call__(self, weights: RawWeightsType) -> ObjectiveReturn: ...
+    def __call__(self, weights: List[WeightsType]) -> ObjectiveReturn: ...
 
 
 class MaskRegion(BaseModel):
@@ -103,5 +110,7 @@ class MaskRegion(BaseModel):
             Should be in the range [0, 1] (inclusive)
     """
 
-    locations: npt.NDArray[np.bool_]  # 1 where value should be enforced, 0 otherwise
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+    locations: BoolArray2D  # 1 where value should be enforced, 0 otherwise
     value: float  # value to enforce at positions, should be in [0, 1]
