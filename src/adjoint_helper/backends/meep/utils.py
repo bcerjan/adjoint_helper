@@ -3,7 +3,10 @@ import meep.adjoint as mpa  # type: ignore
 import numpy as np
 import matplotlib.pyplot as plt
 
-from adjoint_helper.core.defs import MaskRegion, WeightsType
+from adjoint_helper.core.defs import (
+    MaskRegion,
+    WeightsType,
+)
 
 
 def add_flux_box(
@@ -68,7 +71,7 @@ def get_total_box_flux(fluxes: list[mp.DftFlux]) -> float:
 
 def plot_structure(
     opt: mpa.OptimizationProblem,
-    weights: WeightsType,
+    weights: WeightsType | list[WeightsType],
     masks: list[MaskRegion] = [],
     volume: mp.Volume = mp.Volume(
         size=mp.Vector3(mp.inf, mp.inf, 0), center=mp.Vector3()

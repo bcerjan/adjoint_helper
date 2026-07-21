@@ -19,22 +19,26 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 __all__ = [
     "Edge",
     "ObjectiveReturn",
-    "PhysicsObjective",
+    "ObjectiveFunction",
+    "OptimizationFunction",
     "MaskRegion",
     "WeightsType",
     "RawWeightsType",
 ]
 
-import numpy as np
+from enum import Enum
 from typing import (
+    Annotated,
+    Iterable,
+    List,
     Protocol,
     Tuple,
     runtime_checkable,
-    List,
-    Annotated,
 )
+
+import numpy as np
 from pydantic import BaseModel, ConfigDict
-from enum import Enum
+
 from .pydantic_defs import BoolArray2D, FloatArray1D, FloatArray2D
 
 
@@ -63,41 +67,65 @@ type ConstraintReturnType = tuple[float, RawWeightsType]
 """Return type for constraints (linewidth/connectivity)
 """
 
-ObjectiveReturn = tuple[list[float], RawWeightsType]
+SimulationReturn = tuple[list[float], list[list[list[RawWeightsType]]]]
+""" Type that we expect from the simulation / backend. """
+
+type ObjectiveReturn = tuple[list[float], RawWeightsType]
+""" Type that we return from a physics objective -- this is a single
+1D vector with exactly one gradient value for each design parameter. """
 
 
 @runtime_checkable
-class PhysicsObjective(Protocol):
+class OptimizationFunction(Protocol):
     """
-    This is a function that will be called to convert a concatenated 1D vector of weights
+    This is a function that will be called to convert a list of 2D weights
     into objective values and gradients. It's a bit of a doozy,
     unfortunately, because it returns a lot of information for the optimization
     process.
 
-    Succinctly it returns: (list[objective_val], list[list[gradient]])
+    Succinctly it returns: (list[objective_val], list[list[list[gradient]]])
     PhysicsObjective takes in a list of weights (per design region) and returns
     a tuple containing a list of objective values (per design region) and a list
     by objective function of lists by design region of 2D arrays of gradients.
 
-    So it's: ()
+    So it's: objective(list[2D weights per design region]) -> tuple[list[objective values], list[list[list[gradients]]]
 
     Args:
         weights (RawWeightsType): concatenated 1D array of weights for all design regions.
 
-        settings (SimulationSettings): Simulation settings needed for calculating
-            gradients / setting up the physical domain
-
     Returns:
-        out (ObjectiveReturn):
+        out (AdjointReturn):
             A tuple containing:
             1. A list of objective values (even for a single objective, this should
             be an array) from this iteration.
 
-            2. A list of lists of 2D gradients. The order is objective_functions
-            -> design_regions -> frequencies/parameters
+            2. A list of lists of 1D gradients. The order is design regions
+            -> objective functions -> frequencies/parameters -> gradient
     """
 
-    def __call__(self, weights: List[WeightsType]) -> ObjectiveReturn: ...
+    def __call__(self, weights: List[WeightsType]) -> SimulationReturn: ...
+
+
+@runtime_checkable
+class ObjectiveFunction(Protocol):
+    """
+    This is the function that will be called to convert the return values from the
+    adjoint simulation into a single concatenated list of gradients for all design
+    regions.
+
+    Args:
+        weights (RawWeightsType): concatenated 1D array of weights for all design regions.
+
+    Returns:
+        out (ObjectiveReturn):
+            A tuple containing:
+                1. A list of objective values (even for a single objective, this should
+                be an array) from this iteration.
+
+                2. Single concatenated vector of gradients for all design weights
+    """
+
+    def __call__(self, weights: RawWeightsType) -> ObjectiveReturn: ...
 
 
 class MaskRegion(BaseModel):
@@ -114,3 +142,86 @@ class MaskRegion(BaseModel):
 
     locations: BoolArray2D  # 1 where value should be enforced, 0 otherwise
     value: float  # value to enforce at positions, should be in [0, 1]
+
+
+def _mean_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.mean(stacked, axis=0)
+
+
+def _max_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.max(stacked, axis=0)
+
+
+def _min_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.min(stacked, axis=0)
+
+
+def _sum_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.sum(stacked, axis=0)
+
+
+def _abs_max_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.max(np.abs(stacked), axis=0)
+
+
+def _abs_min_func(data: list[RawWeightsType]) -> RawWeightsType:
+    stacked = np.stack(data, axis=0)
+    return np.min(np.abs(stacked), axis=0)
+
+
+_OPERATION_REGISTRY = {
+    "mean": _mean_func,
+    "max": _max_func,
+    "min": _min_func,
+    "abs_max": _abs_max_func,
+    "abs_min": _abs_min_func,
+    "sum": _sum_func,
+}
+
+
+def combine_gradients(
+    grad_list: list[list[list[RawWeightsType]]],
+    operation: str = "mean",
+) -> list[RawWeightsType]:
+    """Function to apply 'simple' transforms to a set of stacked gradients. Returns a list
+    separated by design region. Operations can be: 'mean', 'max', 'abs_min', 'abs_max', 'sum'
+
+    'mean', for example, averages all of the gradients for that design region. The others
+    do something similar.
+    """
+    if operation not in _OPERATION_REGISTRY:
+        allowed = list(_OPERATION_REGISTRY.keys())
+        raise ValueError(
+            f"Invalid operation '{operation}' in `combine_gradients`. Choose from: {allowed} "
+        )
+
+    flattened = []
+    for sublist in grad_list:
+        temp = _flatten_to_arrays(sublist)
+        flattened.append(_OPERATION_REGISTRY[operation](temp))
+
+    return flattened
+
+
+def _flatten_to_arrays(nested: list[list[RawWeightsType]]) -> list[RawWeightsType]:
+    """Should only recieve the lists for a single design region"""
+
+    def _generator(items):
+        for item in items:
+            if isinstance(item, np.ndarray) and item.ndim == 1:
+                yield item
+            elif isinstance(item, np.ndarray):
+                raise ValueError(
+                    f"Expected only 1-dimensional ndarray, got: {item.ndim}"
+                )
+            elif isinstance(item, Iterable) and not isinstance(item, (str, bytes)):
+                yield from _generator(item)
+            else:
+                yield item
+
+    return list(_generator(nested))  # type: ignore

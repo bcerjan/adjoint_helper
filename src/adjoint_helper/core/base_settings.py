@@ -20,42 +20,43 @@ from __future__ import annotations
 
 __all__ = ["SimulationSettings", "OptimizationSettings"]
 
-import json
 import hashlib
+import json
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any, Callable, List
+
 import numpy as np
 import numpy.typing as npt
-from autograd import tensor_jacobian_product, grad, numpy as npa
-from ..vendors.meep.filters import (
-    get_conic_radius_from_eta_e,
-    conic_filter,
-    smoothed_projection,
-    tanh_projection,
-    constraint_solid,
-    constraint_void,
-)  # type: ignore
-from ..vendors.meep.connectivity import constraint_connectivity
-
-from .defs import (
-    PhysicsObjective,
-    MaskRegion,
-    WeightsType,
-    RawWeightsType,
-    ConstraintReturnType,
-    Edge,
-)
-
-from pathlib import Path
-from abc import ABC, abstractmethod
+from autograd import grad, tensor_jacobian_product
+from autograd import numpy as npa
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    model_validator,
     computed_field,
+    model_validator,
 )
-from typing import Any, Callable, List
 from typing_extensions import Self
 
+from ..vendors.meep.connectivity import constraint_connectivity
+from ..vendors.meep.filters import (
+    conic_filter,
+    constraint_solid,
+    constraint_void,
+    get_conic_radius_from_eta_e,
+    smoothed_projection,
+    tanh_projection,
+)  # type: ignore
+from .defs import (
+    ConstraintReturnType,
+    Edge,
+    MaskRegion,
+    ObjectiveFunction,
+    OptimizationFunction,
+    RawWeightsType,
+    WeightsType,
+)
 
 DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 
@@ -66,11 +67,13 @@ class OptimizationSettings(BaseModel, ABC):
     history.
     """
 
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+    model_config = ConfigDict(
+        extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
+    )
 
     obj: list[float] = []
     data: list[float] = []
-    weights: list[WeightsType] = Field(default_factory=list)  # type: ignore
+    weights: list[list[WeightsType]] = Field(default_factory=list)  # type: ignore
     grad: list[np.float64] = []
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
@@ -83,7 +86,7 @@ class OptimizationSettings(BaseModel, ABC):
     do_connectivity: bool = False
     linewidth_sigmoid_threshold: float = 24
     _apply_linewidth: bool = True
-    max_evals: list[int] = []
+    max_evals: list[int] = Field(default_factory=list)
     _use_epsavg: bool = False
     _use_damping: bool = True
     maximum_runtime: float = 200
@@ -93,19 +96,27 @@ class OptimizationSettings(BaseModel, ABC):
     last_completed_index: int = -1
     minimum_feature_size: float = 0.05
 
+    evals: int | None = Field(default=None, exclude=True, repr=False)
+
     @model_validator(mode="before")
     @classmethod
-    def expand_max_evals(cls, data: Any) -> Any:
+    def expand_evals(cls, data: Any) -> Any:
         """
         Expands max_evals if passed as int. Update default below if you update
         them above.
         """
         if isinstance(data, dict):
-            val = data.get("max_evals")  # type: ignore
+            max_evals = data.get("max_evals")  # type: ignore
+            evals = data.pop("evals")
             biases = data.get("sigmoid_biases", [4, 8, 16, 24, 32, 40])  # type: ignore
 
-            if isinstance(val, int):
-                data["max_evals"] = [val] * len(biases)  # type: ignore
+            target_evals = (
+                evals
+                if evals is not None
+                else (max_evals if isinstance(max_evals, int) else None)
+            )
+            if target_evals is not None:
+                data["max_evals"] = [target_evals] * len(biases)  # type: ignore
 
         return data  # type: ignore
 
@@ -202,13 +213,20 @@ class OptimizationSettings(BaseModel, ABC):
 
 
 class DesignRegion(BaseModel):
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+    """Class to store information about a single design region and to perform
+    operations on it (masking and symmetry). The only mandatory inputs are x_size,
+    y_size, and the resolution of the design region. Everything else is optional tools
+    to help manage your simulation."""
+
+    model_config = ConfigDict(
+        extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
+    )
 
     x_size: float
     y_size: float
     resolution: int
-    medium_0: Any
-    medium_1: Any
+    medium_0: Any = None
+    medium_1: Any = None
     connected_sides: List[Edge] = []
     weights: WeightsType = np.array([])
     mask: MaskRegion | None = None
@@ -223,7 +241,7 @@ class DesignRegion(BaseModel):
     @model_validator(mode="after")
     def create_weights(self) -> Self:
         if len(self.weights) == 0:
-            self.weights = np.ones(self.total_n) * 0.5
+            self.weights = np.ones((self.nx_design, self.ny_design)) * 0.5
         return self
 
     @computed_field
@@ -269,14 +287,17 @@ class DesignRegion(BaseModel):
     def unflatten_array(self, arr: RawWeightsType) -> WeightsType:
         return np.reshape(arr, (self.nx_design, self.ny_design))
 
-    def filter_and_project(self, optimization: OptimizationSettings) -> WeightsType:
+    def filter_and_project(
+        self, optimization: OptimizationSettings, weights: WeightsType | None = None
+    ) -> WeightsType:
         """Returns the weights as a 2D array in the 'real' shape"""
         # TODO: Possible store all the stuff from optimizationsettings
         # in this class so you could (in theory) customize per design
         # region. Would also need to move constraints into this class as
         # methods.
-        weights_filtered = conic_filter(  # type: ignore
-            self.weights,  # type: ignore
+        pure_weights = npa.array(weights if weights is not None else self.weights)
+        weights_filtered = conic_filter(
+            pure_weights,
             optimization.filter_radius,
             self.x_size,
             self.y_size,
@@ -285,14 +306,14 @@ class DesignRegion(BaseModel):
 
         if optimization.use_epsavg:
             if optimization.use_smoothed_projection:
-                weights_projected = smoothed_projection(  # type: ignore
+                weights_projected = smoothed_projection(
                     weights_filtered,
                     optimization.sigmoid_bias,
                     optimization.sigmoid_threshold,
                     self.resolution,
                 )
             else:
-                return weights_filtered  # type: ignore
+                return weights_filtered
         else:
             weights_projected = tanh_projection(  # type: ignore
                 weights_filtered,
@@ -303,15 +324,54 @@ class DesignRegion(BaseModel):
         return weights_projected  # type: ignore
 
     def backpropagate(
-        self, gradient: WeightsType, optimization: OptimizationSettings
+        self, gradient: RawWeightsType, optimization: OptimizationSettings
     ) -> None:
         """Applies tensor_jacobian_product and updates the gradient in-place.
-        expects gradient to be shaped into the correct format
+        expects gradient to be 1D
         """
 
-        gradient[:] = tensor_jacobian_product(self.filter_and_project, 0)(
-            optimization, gradient
-        )
+        pure_weights = np.array(self.weights, dtype=float)
+        pure_gradient = np.array(self.unflatten_array(gradient), dtype=float)
+        x_size = self.x_size
+        y_size = self.y_size
+        res = self.resolution
+
+        f_radius = optimization.filter_radius
+        use_epsavg = bool(optimization.use_epsavg)
+        use_smoothed = bool(optimization.use_smoothed_projection)
+        sig_bias = float(optimization.sigmoid_bias)
+        sig_thresh = float(optimization.sigmoid_threshold)
+
+        def pure_math_mapping(w):
+            weights_filtered = conic_filter(
+                w,
+                f_radius,
+                x_size,
+                y_size,
+                [res],
+            )
+
+            if use_epsavg:
+                if use_smoothed:
+                    return smoothed_projection(
+                        weights_filtered,
+                        sig_bias,
+                        sig_thresh,
+                        res,
+                    )
+                else:
+                    return weights_filtered
+            else:
+                return tanh_projection(
+                    weights_filtered,
+                    sig_bias,
+                    sig_thresh,
+                )
+
+        vjp_func = tensor_jacobian_product(pure_math_mapping, argnum=0)
+
+        vjp_out = vjp_func(pure_weights, pure_gradient)
+        gradient[:] = vjp_out.flatten()
 
     def line_width_and_spacing_constraint(
         self,
@@ -467,8 +527,9 @@ class SimulationSettings(BaseModel, ABC):
     """
 
     n_design_parameters: int = (
-        1  # How many 'things' are we optimizing for? Freqs, targets...
+        1  # How many 'things' are we optimizing for? Typically frequencies
     )
+    n_objective_functions: int = 1
     design_regions: List[DesignRegion]
     resolution: int
     baseline_optimization_value: float | list[float] = -np.inf
@@ -499,6 +560,18 @@ class SimulationSettings(BaseModel, ABC):
     def n_design_regions(self) -> int:
         return len(self.design_regions)
 
+    @computed_field
+    @property
+    def weights(self) -> list[WeightsType]:
+        if self.enforce_symmetry:
+            self.apply_symmetry()
+        self.apply_masks()
+
+        ret = []
+        for dr in self.design_regions:
+            ret.append(dr.weights)
+        return ret
+
     def is_multi_region(self) -> bool:
         return len(self.design_regions) > 1
 
@@ -519,6 +592,18 @@ class SimulationSettings(BaseModel, ABC):
             self.baseline_optimization_value = val
             self.needs_baseline = False
 
+    def get_empty_grads(self) -> list[list[list[RawWeightsType]]]:
+        return [
+            [
+                [
+                    np.zeros(r.weights.flatten().shape)
+                    for _ in range(self.n_design_parameters)
+                ]
+                for _ in range(self.n_objective_functions)
+            ]
+            for r in self.design_regions
+        ]
+
     @abstractmethod
     def normalization(self) -> float | list[float]:
         """Function to generate baseline value(s) for your optimization problem
@@ -533,7 +618,7 @@ class SimulationSettings(BaseModel, ABC):
         return 1
 
     @abstractmethod
-    def create_opt(self, optimization: OptimizationSettings) -> PhysicsObjective:
+    def create_opt(self, optimization: OptimizationSettings) -> OptimizationFunction:
         """This is the "main" method for your optimization. You can use whatever
         simulation engine you like (meep, tidy3D, legume, COMSOL, Elmer, ... ) as
         long as it can produce gradients for your objective function (whatever
@@ -548,8 +633,16 @@ class SimulationSettings(BaseModel, ABC):
             specific to each optimization method.
 
         Returns:
-            out (PhysicsObjective): Function that takes in weights and returns
-            gradients
+            out (OptimizationFunction): A function that takes in a list of weights per
+            design region and returns objective values and gradients. The returned
+            gradients must be stacked like:
+                design_region[objective_function[design_parameter[1D gradient vector]]]
+
+
+            For common backends, there should be a 'normalaize_xxx_output' function that
+            automatically converts to the correct format, so all you need to do is call it.
+            This function is from adjoint_helper.utils.normalization_functions. If there isn't
+            one for your simulation backend, please write one and submit it as a PR.
         """
         pass
 
@@ -560,7 +653,7 @@ class SimulationSettings(BaseModel, ABC):
             )
 
         for i, r in enumerate(self.design_regions):
-            r.weights[:] = new_weights[i]
+            r.weights[:, :] = new_weights[i]
 
     def vector_to_arrays(self, vec: RawWeightsType) -> List[WeightsType]:
         """Split the vector into pieces for each design region"""
@@ -569,7 +662,19 @@ class SimulationSettings(BaseModel, ABC):
         for r in self.design_regions:
             stop = start + r.total_n
             ret.append(r.unflatten_array(vec[start:stop]))
-            start += stop
+            start = stop
+
+        return ret
+
+    def arrays_to_vector(self, arrays: list[WeightsType]) -> RawWeightsType:
+        ret = np.zeros(self.total_n(), dtype=arrays[-1].dtype)
+        start = 0
+        stop = 0
+        for w in arrays:
+            flat = w.flatten()
+            stop = start + len(flat)
+            ret[start:stop] = flat
+            start = stop
 
         return ret
 
@@ -640,12 +745,11 @@ class SimulationSettings(BaseModel, ABC):
         optimization.sigmoid_bias = bias
         return ret
 
-    @abstractmethod
     def get_objective(
         self,
         optimization: OptimizationSettings,
-    ) -> PhysicsObjective:
-        return get_physics_objective(self, optimization)
+    ) -> ObjectiveFunction:
+        return get_objective(self, optimization)
 
     def get_fingerprint(self) -> str:
         core_params: dict[str, Any] = {
@@ -666,18 +770,18 @@ RegistryKey = tuple[type, type]
 
 _OBJECTIVE_REGISTRY: dict[
     RegistryKey,
-    Callable[..., PhysicsObjective],
+    Callable[..., ObjectiveFunction],
 ] = {}
 
 
-def register_physics_objective(sim_type: type, opt_type: type):
+def register_objective(sim_type: type, opt_type: type):
     """
     Decorator to register a function for a specific combination of types.
     Supports inheritance-aware dispatch.
     """
 
     def decorator(
-        func: Callable[..., PhysicsObjective],
+        func: Callable[..., ObjectiveFunction],
     ):
         _OBJECTIVE_REGISTRY[(sim_type, opt_type)] = func
         return func
@@ -685,39 +789,25 @@ def register_physics_objective(sim_type: type, opt_type: type):
     return decorator
 
 
-def get_physics_objective(
+def get_objective(
     settings: SimulationSettings, optimization: OptimizationSettings
-) -> PhysicsObjective:
-    """
-    The Router. Uses 'isinstance' and MRO (Method Resolution Order)
-    to find the most specific registered combination.
-    """
+) -> ObjectiveFunction:
+
     best_func = None
     max_specificity = -1
 
-    # We must iterate because we aren't looking for an exact dict key,
-    # but the "best" matching key in the inheritance hierarchy.
     for (reg_sim_type, reg_opt_type), func in _OBJECTIVE_REGISTRY.items():
-        # 1. Check if the provided objects match the registered types
         if isinstance(settings, reg_sim_type) and isinstance(
             optimization, reg_opt_type
         ):
-            # 2. Calculate Specificity Score
-            # We use the MRO (Method Resolution Order) index.
-            # A lower index means the class is more specific (closer to the object).
-            # We want to maximize 'specificity', so we use: (MRO_Length - Index)
-
             sim_mro = type(settings).mro()
             opt_mro = type(optimization).mro()
 
-            # Score = (How deep is the sim_type in the MRO?) + (How deep is the opt_type in the MRO?)
-            # Using (Length - Index) ensures that the subclass (Index 0) has a higher score than the base class (Index 1).
             sim_score = len(sim_mro) - sim_mro.index(reg_sim_type)
             opt_score = len(opt_mro) - opt_mro.index(reg_opt_type)
 
             total_specificity = sim_score + opt_score
 
-            # 3. Keep the match with the highest specificity
             if total_specificity > max_specificity:
                 max_specificity = total_specificity
                 best_func = func

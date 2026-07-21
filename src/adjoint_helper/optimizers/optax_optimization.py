@@ -18,9 +18,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["OptaxOptimizationSettings"]
 
-from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
+from ..core.defs import ObjectiveFunction, ObjectiveReturn, WeightsType, RawWeightsType
 from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase, register_physics_objective
+from ..core.base_settings import SimulationSettingsBase, register_objective
 from ..core.constraints import tensor_jacobian_product  # type: ignore
 from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
 
@@ -145,10 +145,10 @@ class OptaxOptimizationSettings(OptimizationSettings):
         return settings.raw_to_weightslike(optimal_design_weights)
 
 
-@register_physics_objective(SimulationSettingsBase, OptaxOptimizationSettings)
+@register_objective(SimulationSettingsBase, OptaxOptimizationSettings)
 def _(
     settings: SimulationSettingsBase, optimization: OptaxOptimizationSettings
-) -> PhysicsObjective:
+) -> ObjectiveFunction:
     def get_optax_objective(
         weights: RawWeightsType,
     ) -> ObjectiveReturn:

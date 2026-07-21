@@ -18,11 +18,11 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["NloptEpigraphOptimizationSettings"]
 
-from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
+from ..core.defs import ObjectiveFunction, ObjectiveReturn, WeightsType, RawWeightsType
 from ..core.export_settings import OptimizationSettings
 from ..core.base_settings import (
     SimulationSettingsBase,
-    register_physics_objective,
+    register_objective,
 )
 from ..core.constraints import tensor_jacobian_product  # type: ignore
 from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
@@ -319,10 +319,10 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         return optimal_design_weights
 
 
-@register_physics_objective(SimulationSettingsBase, NloptEpigraphOptimizationSettings)
+@register_objective(SimulationSettingsBase, NloptEpigraphOptimizationSettings)
 def _(
     settings: SimulationSettingsBase, optimization: NloptEpigraphOptimizationSettings
-) -> PhysicsObjective:
+) -> ObjectiveFunction:
     def get_nlopt_epigraph_objective(
         weights: RawWeightsType,
     ) -> ObjectiveReturn:

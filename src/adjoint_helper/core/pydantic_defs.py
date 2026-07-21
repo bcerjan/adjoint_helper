@@ -1,44 +1,9 @@
 __all__ = ["FloatArray1D", "FloatArray2D", "BoolArray2D"]
-from typing import Annotated, Any, ClassVar, Dict
+import base64
+from typing import Any, ClassVar, Dict
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import BeforeValidator, PlainSerializer
 from pydantic_core import core_schema
-
-
-def ndarray_type(dtype: Any, ndim: int | None = None):
-
-    def validate_and_coerce(v: Any) -> np.ndarray:
-        if isinstance(v, np.ndarray):
-            arr = v
-        elif isinstance(v, dict) and "bytes" in v:
-            arr = np.frombuffer(v["bytes"], dtype=np.dtype(v["dtype"]))
-            arr = arr.reshape(v["shape"])
-        else:
-            try:
-                arr = np.array(v)
-            except Exception as e:
-                raise ValueError(f"Could not convert input to numpy array: {e}")
-
-        if arr.dtype != np.dtype(dtype):
-            print(f"Warning: coercing type of input {arr.dtype} to {dtype}")
-            arr = arr.astype(dtype)
-
-        if ndim is not None and arr.ndim != ndim:
-            raise ValueError(
-                f"Array must have exactly {ndim} dimensions, got {arr.ndim}"
-            )
-
-        return arr
-
-    def serialize_to_bytes(v: np.ndarray) -> Dict[str, Any]:
-        return {"shape": list(v.shape), "dtype": str(v.dtype), "bytes": v.tobytes()}
-
-    return Annotated[
-        NDArray[dtype],
-        BeforeValidator(validate_and_coerce),
-        PlainSerializer(serialize_to_bytes, return_type=dict),
-    ]
 
 
 class PydanticNDArray(np.ndarray):
@@ -59,7 +24,8 @@ class PydanticNDArray(np.ndarray):
             if isinstance(v, np.ndarray):
                 arr = v
             elif isinstance(v, dict) and "bytes" in v:
-                arr = np.frombuffer(v["bytes"], dtype=np.dtype(v["dtype"]))
+                raw_bytes = base64.b64decode(v["bytes"])
+                arr = np.frombuffer(raw_bytes, dtype=np.dtype(v["dtype"]))
                 arr = arr.reshape(v["shape"])
             else:
                 try:
@@ -79,7 +45,8 @@ class PydanticNDArray(np.ndarray):
             return arr
 
         def serialize(v: np.ndarray) -> Dict[str, Any]:
-            return {"shape": list(v.shape), "dtype": str(v.dtype), "bytes": v.tobytes()}
+            raw_bytes = base64.b64encode(v.tobytes()).decode("utf-8")
+            return {"shape": list(v.shape), "dtype": str(v.dtype), "bytes": raw_bytes}
 
         serialization_scheme = core_schema.plain_serializer_function_ser_schema(
             serialize

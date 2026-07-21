@@ -31,15 +31,21 @@ class OptimizationHistory(BaseModel):
     def fingerprint(self) -> str:
         return self.settings.get_fingerprint()
 
-    def save_to_json(self, fpath: Path) -> None:
+    def save_to_json(self) -> None:
+        fpath = self.settings.data_dir / self.settings.history_fname
         with open(fpath, "w") as f:
             f.write(self.model_dump_json(indent=4))
         print(f"History saved to {fpath}")
 
     @classmethod
     def load_from_json(
-        cls, fpath: Path, current_settings: SimulationSettings, strict: bool = True
+        cls,
+        current_settings: SimulationSettings,
+        fpath: Path | None = None,
+        strict: bool = True,
     ) -> "OptimizationHistory | None":
+        if fpath is None:
+            fpath = current_settings.data_dir / current_settings.history_fname
 
         try:
             with open(fpath, "r") as f:

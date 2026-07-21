@@ -18,15 +18,24 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["NloptOptimizationSettings"]
 
-from ..core.defs import PhysicsObjective, ObjectiveReturn, WeightsType, RawWeightsType
-from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase, register_physics_objective
-from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
+from ..core.defs import (
+    ObjectiveFunction,
+    ObjectiveReturn,
+    WeightsType,
+    RawWeightsType,
+    combine_gradients,
+)
+from ..core.base_settings import (
+    SimulationSettings,
+    OptimizationSettings,
+    register_objective,
+)
+from ..utils.util import save_output
 
 import numpy as np
 import nlopt  # type: ignore
 from pydantic import Field
+from typing import List
 
 
 class NloptOptimizationSettings(OptimizationSettings):
@@ -46,37 +55,21 @@ class NloptOptimizationSettings(OptimizationSettings):
 
     def _linewidth_cons(
         self,
-        weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
 
-        spacing, grad[:] = settings.line_width_and_spacing(
-            weights=settings.raw_to_weightslike(weights), optimization=self
-        )
+        spacing, grad[:] = settings.line_width_and_spacing(optimization=self)
 
         return spacing
 
     def _connectivity_cons(
         self,
-        weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
-        """_summary_
 
-        Args:
-            weights (npt.NDArray[np.float64]): _description_
-            grad (npt.NDArray[np.float64]): _description_
-            settings (SimulationSettings): _description_
-            optimization (OptimizationSettings): _description_
-
-        Returns:
-            float: _description_
-        """
-        connectivity, grad[:] = settings.connectivity_constraint(
-            weights=settings.raw_to_weightslike(weights), optimization=self
-        )
+        connectivity, grad[:] = settings.connectivity_constraint(optimization=self)
 
         return connectivity
 
@@ -84,7 +77,7 @@ class NloptOptimizationSettings(OptimizationSettings):
         self,
         weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
         """
         Internal objective function, just calls the user-supplied objective function
@@ -102,16 +95,24 @@ class NloptOptimizationSettings(OptimizationSettings):
 
         obj: float = np.linalg.norm(np.real(f0))  # type: ignore
         self.obj.append(obj)
-        self.weights.append(weights.copy())
+        self.weights.append(settings.vector_to_arrays(weights))
         self.data.append(obj)
 
         print(f"\nstep = {len(self.weights) + 1}")
         print(f"\tobjective = {np.linalg.norm(np.real(f0)):.4e}")
         print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
+        if len(self.obj) > 1:
+            diff = np.abs(self.obj[-1] - self.obj[-2])
+            print(f"\tobjective diff: {diff}")
+            if diff <= 1e-8:
+                print(
+                    "Objective did not change, something is wrong so we are aborting."
+                )
+                exit()
 
         return obj
 
-    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
+    def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
         """_summary_
 
         Args:
@@ -124,15 +125,11 @@ class NloptOptimizationSettings(OptimizationSettings):
 
         settings.calculate_normalization()
 
-        lb = np.zeros(settings.total_n_raw())
-        ub = np.ones(settings.total_n_raw())
-        weights = np.ones(settings.total_n_raw()) * 0.5
+        lb = np.zeros(settings.total_n())
+        ub = np.ones(settings.total_n())
+        weights: RawWeightsType = np.ones(settings.total_n()) * 0.5
 
-        apply_masks(
-            masks=settings.get_masks(self.filter_radius),
-            weights=weights,
-            multi_region=settings.is_multi_region(),
-        )
+        settings.apply_masks()
 
         self.use_damping = True
 
@@ -141,7 +138,8 @@ class NloptOptimizationSettings(OptimizationSettings):
         biases = self.sigmoid_biases
 
         if last_index >= 0:
-            weights = self.weights[-1]
+            last_weights = self.weights[-1]
+            weights = settings.arrays_to_vector(last_weights)
 
         for i, sigmoid_bias in enumerate(
             biases[last_index + 1 :], start=last_index + 1
@@ -155,13 +153,13 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             if self.apply_linewidth:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._linewidth_cons(x, g, settings),  # pyright: ignore[reportUnknownArgumentType]
+                    lambda _, g: self._linewidth_cons(grad=g, settings=settings),  # pyright: ignore[reportUnknownArgumentType]
                     self.linewidth_tol,
                 )
 
             if self.apply_connectivity:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda x, g: self._connectivity_cons(x, g, settings),  # pyright: ignore[reportUnknownArgumentType]
+                    lambda _, g: self._connectivity_cons(grad=g, settings=settings),  # pyright: ignore[reportUnknownArgumentType]
                     self.connectivity_tol,
                 )
 
@@ -173,57 +171,59 @@ class NloptOptimizationSettings(OptimizationSettings):
                 lambda x, g: self._nlopt_objective_f(x, g, settings)  # pyright: ignore[reportUnknownArgumentType]
             )
 
-            weights[:] = solver.optimize(weights)  # type: ignore
+            weights[:] = solver.optimize(weights)
 
-            save_output(weights, settings, self, sigmoid_bias)
+            save_output(settings, self, sigmoid_bias)
             self.last_completed_index = i
 
-        optimal_design_weights = settings.filter_and_project(
-            weights=weights, optimization=self
-        )
+        optimal_design_weights = settings.filter_and_project(optimization=self)
 
-        save_output(weights, settings, self, 0, binarize=True)
+        save_output(settings, self, 0, binarize=True)
 
-        return settings.raw_to_weightslike(optimal_design_weights)
+        return optimal_design_weights
 
 
-@register_physics_objective(SimulationSettingsBase, NloptOptimizationSettings)
+@register_objective(SimulationSettings, NloptOptimizationSettings)
 def _(
-    settings: SimulationSettingsBase, optimization: NloptOptimizationSettings
-) -> PhysicsObjective:
+    settings: SimulationSettings, optimization: NloptOptimizationSettings
+) -> ObjectiveFunction:
     def get_nlopt_objective(
         weights: RawWeightsType,
     ) -> ObjectiveReturn:
         """Default objective function used for `nlopt` optimizations. For simple
         (single-objective) optimizations, this is sufficient as-is. For
-        more complicated objectives, you will need to customize it for your
+        more complicated objectives, you might need to customize it for your
         needs. Weights should not be updated in-place in this function.
 
         Args:
-            weights (RawWeightsType): List of weights concatenated together.
+            weights (List[WeightsType]): List of weights for each design region.
 
         Returns:
             out (ObjectiveReturn): FOM and gradients for the given weights
         """
 
+        settings.update_weights(settings.vector_to_arrays(weights))
+        settings.apply_masks()
+        settings.apply_symmetry()
+
         opt = settings.create_opt(optimization)
 
-        obj_val, grad = opt(
-            settings.filter_and_project(
-                weights=settings.raw_to_weightslike(weights), optimization=optimization
-            )
-        )
+        obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
 
-        # Squeeze grad into a 1D vector:
-        grad = grad.ravel()
-        print(f"grad: {grad.shape}, weights: {weights.shape}")
-        grad[:] = tensor_jacobian_product(wrapped_filter_and_project, 0)(
-            weights,
-            settings,
-            optimization,
-            grad,
-        )
+        grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
+        temp_grads = settings.get_empty_grads()
 
-        return obj_val, grad
+        for dr_i, r in enumerate(settings.design_regions):
+            for obj_func in range(settings.n_objective_functions):
+                for param in range(settings.n_design_parameters):
+                    r.backpropagate(
+                        grads[dr_i][obj_func][param], optimization=optimization
+                    )
+                    temp_grads[dr_i][obj_func][param][:] = grads[dr_i][obj_func][param]
+
+        grad_out = combine_gradients(temp_grads)
+        vec_out = np.concatenate(grad_out)
+
+        return obj_val, vec_out
 
     return get_nlopt_objective

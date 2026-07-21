@@ -20,10 +20,18 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-from .core.base_settings import OptimizationSettings, SimulationSettings
-from .core.defs import Edge, MaskRegion, ObjectiveReturn, PhysicsObjective
+from .core.base_settings import OptimizationSettings, SimulationSettings, DesignRegion
+from .core.defs import (
+    Edge,
+    MaskRegion,
+    ObjectiveReturn,
+    ObjectiveFunction,
+    OptimizationFunction,
+    SimulationReturn,
+)
 from .core.optimization_history import OptimizationHistory
 from .utils.util import save_fom_history, save_output
+from .utils.normalization_functions import normalize_meep_output
 
 # from .optimizers.nlopt_optimization import NloptOptimizationSettings
 # from .optimizers.optax_optimization import OptaxOptimizationSettings

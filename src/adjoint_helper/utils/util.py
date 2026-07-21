@@ -20,7 +20,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from ..core.base_settings import OptimizationSettings, SimulationSettings
 from ..core.optimization_history import OptimizationHistory
-from ..core.defs import MaskRegion, RawWeightsType, WeightsType
 
 
 def save_output(
