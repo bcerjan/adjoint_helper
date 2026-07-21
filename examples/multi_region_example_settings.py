@@ -1,4 +1,3 @@
-from inspect import isclass
 from typing import List
 import adjoint_helper as ah
 
@@ -6,8 +5,12 @@ import adjoint_helper as ah
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
-import numpy.typing as npt
-import autograd.numpy as npa  # type: ignore
+import autograd.numpy as npa
+
+from adjoint_helper.utils.normalization_functions import (
+    normalize_meep_output,
+    normalize_meep_weights,
+)
 
 """
 Example of a settings class with multiple design regions.
@@ -22,7 +25,7 @@ but with a second design region (to demonstrate how that would work)
 """
 
 
-class MultiRegionExampleSettings(ah.MultiRegionSettings):
+class MultiRegionExampleSettings(ah.SimulationSettings):
     """These are parameters that are unique to your simulation and can be re-used
     for different variations (new substrate / materials / whatever)
     """
@@ -42,12 +45,15 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         return 1.0
 
     def get_max_design_width(self) -> float:
-        return max(self.designX)
+        max = -1
+        for d in self.design_regions:
+            if max < d.x_size:
+                max = d.x_size
+        return max
 
     def get_total_design_height(self) -> float:
-        return np.sum(self.designY[:-1]) + self.design_region_spacing * (
-            self.n_design_regions - 1
-        )
+        design_y = np.sum([d.y_size for d in self.design_regions[:-1]])
+        return design_y + self.design_region_spacing * (self.n_design_regions - 1)
 
     def create_geometry(self) -> list[mp.GeometricObject]:
         """
@@ -80,26 +86,6 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
             ),
         ]
 
-    def apply_symmetry(
-        self, weights: list[npt.NDArray[np.float64]]
-    ) -> list[npt.NDArray[np.float64]]:
-        """Applies symmetry to weights. Takes in list of 2D weights and applies
-        symmetry to them. Should be sorted into design regions already.
-
-        Args:
-            weights (list[npt.NDArray[np.float64]]): List of weights per design region
-                already reshaped into appropriate 2D arrays
-
-        Returns:
-            list[npt.NDArray[np.float64]]: List of 2D arrays after symmetry
-        """
-        # we flip UD because numpy uses a different ordering from meep
-        ret: list[np.ndarray] = []
-        for i in range(self.n_design_regions):
-            ret.append((npa.flipud(weights[i]) + weights[i]) / 2)  # type: ignore
-
-        return ret
-
     def normalization(self) -> float | list[float]:
         # No normalization needed for this objective
         return super().normalization()
@@ -129,13 +115,13 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         symmetries: list[mp.Symmetry] = []
 
         if self.enforce_symmetry:
-            symmetries = [mp.Mirror(direction=mp.X_DIR)]  # type: ignore
+            symmetries = [mp.Mirror(direction=mp.X)]  # type: ignore
 
         pmlLayers = [mp.PML(thickness=pmlLen)]
 
         freq = 1 / self.wavelength
 
-        df = 0.2
+        df = 0.1
 
         src = mp.Vector3(self.get_max_design_width(), 0)
 
@@ -162,12 +148,12 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
 
         geometry = self.create_geometry()
         total_height = -cell.y / 2 + pmlLen + padding
-        for i in range(self.n_design_regions):
+        for dr in self.design_regions:
             matGrid = mp.MaterialGrid(
-                mp.Vector3(self.nx_design[i], self.ny_design[i]),
+                mp.Vector3(dr.nx_design, dr.ny_design),
                 backMed,
                 matMed,
-                weights=np.ones((self.nx_design[i], self.ny_design[i])) * 0.5,
+                weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
                 beta=0,
                 do_averaging=optimization.use_epsavg,
                 damping=optimization.use_damping,
@@ -177,14 +163,14 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
             matGridRegion = mpa.DesignRegion(
                 matGrid,  # type: ignore
                 volume=mp.Volume(
-                    center=mp.Vector3(0, total_height + self.designY[i] / 2),
-                    size=mp.Vector3(self.designX[i], self.designY[i]),
+                    center=mp.Vector3(0, total_height + dr.y_size / 2),
+                    size=mp.Vector3(dr.x_size, dr.y_size),
                 ),
             )
 
             matgrid_regions.append(matGridRegion)
 
-            total_height += self.designY[i] + self.design_region_spacing
+            total_height += dr.y_size + self.design_region_spacing
 
             geometry.append(
                 mp.Block(
@@ -238,7 +224,9 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
 
         return opt
 
-    def create_opt(self, optimization: ah.OptimizationSettings) -> ah.PhysicsObjective:
+    def create_opt(
+        self, optimization: ah.OptimizationSettings
+    ) -> ah.OptimizationFunction:
 
         # In this case, we need to wrap weights (a 1D numpy array) into a list
         # for an mpa.OptimizationProblem. The return type of the objective is expected
@@ -248,32 +236,21 @@ class MultiRegionExampleSettings(ah.MultiRegionSettings):
         opt = self.create_sim(optimization)
 
         def obj(
-            weights: npt.NDArray[np.float64],
-        ) -> ah.ObjectiveReturn:
+            weights: list[np.ndarray[tuple[int, int], np.dtype[np.float64]]],
+        ) -> ah.SimulationReturn:
 
-            val, grad = opt(self.separate_weights(weights))  # type: ignore
-            print(f"val: {val}")
-            print(f"max: {np.max(grad[:])}")
+            # Meep's opt wants 1D vectors of weights, but we receive a 2D array
+            # from the optimization backend (always)
+            m_weights = normalize_meep_weights(weights)
 
-            # In case of a single design region, we need to convert it back into a
-            # List[List[float]] as meep tries to be helpful by squeezing
-            if not (
-                isinstance(grad, list) and all(isinstance(item, list) for item in grad)
-            ):
-                grad = [grad]
-            return (val, npa.concatenate(grad))  # type: ignore
+            val, grad = opt(m_weights)  # type: ignore
+
+            # For common backends, there should be a similar utility function
+            # to automatically normalize the output into the correct shape
+            # for the rest of the library. If there isn't one for your backend,
+            # feel free to write one and submit it as a PR.
+            val, grad = normalize_meep_output((val, grad))
+
+            return (val, grad)
 
         return obj
-
-    def separate_weights(
-        self, weights: npt.NDArray[np.float64]
-    ) -> list[npt.NDArray[np.float64]]:
-        ret: list[npt.NDArray[np.float64]] = []
-        start = 0
-        stop = 0
-        for n in self.total_n():
-            stop = start + n
-            ret.append(weights[start:stop])
-            start = stop
-
-        return ret

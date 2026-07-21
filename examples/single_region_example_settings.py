@@ -4,8 +4,12 @@ import adjoint_helper as ah
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
-import numpy.typing as npt
-import autograd.numpy as npa  # type: ignore
+import autograd.numpy as npa
+
+from adjoint_helper.utils.normalization_functions import (
+    normalize_meep_output,
+    normalize_meep_weights,
+)  # type: ignore
 
 """
 Example of a settings class -- in theory the only piece of code you need to write.
@@ -19,7 +23,7 @@ can get the bare simulation instead of the objective (which obscures it)
 """
 
 
-class SingleRegionExampleSettings(ah.SingleRegionSettings):
+class SingleRegionExampleSettings(ah.SimulationSettings):
     """These are parameters that are unique to your simulation and can be re-used
     for different variations (new substrate / materials / whatever)
     """
@@ -42,8 +46,8 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         pmlLen = self.wavelength * 2
 
         cell = mp.Vector3(
-            2 * pmlLen + self.designX + 2 * padding,
-            2 * pmlLen + self.designY + 2 * padding + self.wgWidth,
+            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
+            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
             2 * pmlLen + self.wgHeight + 2 * padding,
         )
         matMed = mp.Medium(index=self.matInd)
@@ -53,7 +57,9 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
             # Waveguide
             mp.Block(
                 size=mp.Vector3(pmlLen + padding, self.wgWidth, self.wgHeight),
-                center=mp.Vector3(-(pmlLen + padding + self.designX) / 2, 0, 0),
+                center=mp.Vector3(
+                    -(pmlLen + padding + self.design_regions[0].x_size) / 2, 0, 0
+                ),
                 material=matMed,
             ),
             # Substrate:
@@ -64,21 +70,7 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
             ),
         ]
 
-    def apply_symmetry(
-        self, weights: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        """Applies symmetry in the Y direction
-
-        Args:
-            weights (npt.NDArray[np.float64]): Weights in structured format (2D array)
-
-        Returns:
-            npt.NDArray[np.float64]: Weights in 2D with symmetry applied
-        """
-        # we flip LR because numpy uses a different ordering from meep
-        return (npa.fliplr(weights) + weights) / 2  # type: ignore
-
-    def get_masks(self, filter_radius: float) -> list[ah.MaskRegion]:
+    def get_masks(self, filter_radius: float) -> ah.MaskRegion:
         """Return border masks for the design region.
 
         The masks are used to prevent violations on constraints on the
@@ -89,14 +81,14 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         empty regions (adjacent to wavguide port)
         """
         x_grid = np.linspace(
-            -self.designX / 2,
-            self.designX / 2,
-            self.nx_design,
+            -self.design_regions[0].x_size / 2,
+            self.design_regions[0].x_size / 2,
+            self.design_regions[0].nx_design,
         )
         y_grid = np.linspace(
-            -self.designY / 2,
-            self.designY / 2,
-            self.ny_design,
+            -self.design_regions[0].y_size / 2,
+            self.design_regions[0].y_size / 2,
+            self.design_regions[0].ny_design,
         )
         xy_grid_x, xy_grid_y = np.meshgrid(
             x_grid,
@@ -105,15 +97,13 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
             indexing="ij",
         )
 
-        left_waveguide_port = (xy_grid_x <= -self.designX / 2 + filter_radius) & (
-            np.abs(xy_grid_y) <= self.wgWidth / 2
-        )
+        left_waveguide_port = (
+            xy_grid_x <= -self.design_regions[0].x_size / 2 + filter_radius
+        ) & (np.abs(xy_grid_y) <= self.wgWidth / 2)
 
         border_mask = left_waveguide_port
 
-        return [
-            ah.MaskRegion(locations=border_mask, value=1),
-        ]
+        return ah.MaskRegion(locations=border_mask, value=1)  # type: ignore
 
     def normalization(self) -> float | list[float]:
 
@@ -121,15 +111,15 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         pmlLen = 2 * self.wavelength
 
         cell = mp.Vector3(
-            2 * pmlLen + self.designX + 2 * padding,
-            2 * pmlLen + self.designY + 2 * padding + self.wgWidth,
+            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
+            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
             2 * pmlLen + self.wgHeight + 2 * padding,
         )
 
         symmetries: list[mp.Symmetry] = []
 
         if self.enforce_symmetry:
-            symmetries = [mp.Mirror(direction=mp.Y_DIR, phase=-1)]  # type: ignore
+            symmetries = [mp.Mirror(direction=mp.Y, phase=-1)]  # type: ignore
 
         pmlLayers = [mp.PML(thickness=pmlLen)]
 
@@ -207,8 +197,8 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         pmlLen = 2 * self.wavelength
 
         cell = mp.Vector3(
-            2 * pmlLen + self.designX + 2 * padding,
-            2 * pmlLen + self.designY + 2 * padding + self.wgWidth,
+            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
+            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
             2 * pmlLen + self.wgHeight + 2 * padding,
         )
 
@@ -228,7 +218,7 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         srcPos = mp.Vector3(0, 0, padding / 2 + self.wgHeight)
 
         measurePos = mp.Vector3(
-            -(pmlLen + padding / 2 + self.designX) / 2,
+            -(pmlLen + padding / 2 + self.design_regions[0].x_size) / 2,
             0,
             0,
         )
@@ -250,8 +240,8 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         matMed = mp.Medium(index=self.matInd)
         backMed = mp.Medium(index=self.bgInd)
 
-        nxDesign = self.nx_design
-        nyDesign = self.ny_design
+        nxDesign = self.design_regions[0].nx_design
+        nyDesign = self.design_regions[0].ny_design
 
         matGrid = mp.MaterialGrid(
             mp.Vector3(nxDesign, nyDesign, 0),
@@ -267,7 +257,11 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
             matGrid,  # type: ignore
             volume=mp.Volume(
                 center=mp.Vector3(0, 0, 0),
-                size=mp.Vector3(self.designX, self.designY, self.wgHeight),
+                size=mp.Vector3(
+                    self.design_regions[0].x_size,
+                    self.design_regions[0].y_size,
+                    self.wgHeight,
+                ),
             ),
         )
         geometry = self.create_geometry()
@@ -297,7 +291,7 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
             ),
             mode=1,
             forward=False,  # Not sure that this matters as it just inverts the sign, but we square later anyway
-            eig_parity=mp.ODD_Z,
+            eig_parity=mp.ODD_Y + mp.EVEN_Z,  # this is TE for meep
         )
 
         obList: list[mpa.ObjectiveQuantity] = [te0]
@@ -318,7 +312,11 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
 
         return opt
 
-    def create_opt(self, optimization: ah.OptimizationSettings) -> ah.PhysicsObjective:
+    def create_opt(
+        self, optimization: ah.OptimizationSettings
+    ) -> ah.OptimizationFunction:
+
+        opt = self.create_sim(optimization=optimization)
 
         # In this case, we need to wrap weights (a 1D numpy array) into a list
         # for an mpa.OptimizationProblem. The return type of the objective is expected
@@ -326,11 +324,11 @@ class SingleRegionExampleSettings(ah.SingleRegionSettings):
         # value(s) and the numpy array is the gradients flattened into one large
         # array.
         def obj(
-            weights: npt.NDArray[np.float64],
-        ) -> ah.ObjectiveReturn:
-            opt = self.create_sim(optimization=optimization)
-            val, grad = opt([weights])
+            weights: list[np.ndarray[tuple[int, int], np.dtype[np.float64]]],
+        ) -> ah.SimulationReturn:
+            m_weights = normalize_meep_weights(weights)
+            val, grad = opt(m_weights)  # type: ignore
 
-            return ([val], grad)  # type: ignore
+            return normalize_meep_output((val, grad))
 
         return obj
