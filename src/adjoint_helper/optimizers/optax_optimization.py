@@ -18,16 +18,24 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["OptaxOptimizationSettings"]
 
-from ..core.defs import ObjectiveFunction, ObjectiveReturn, WeightsType, RawWeightsType
-from ..core.export_settings import OptimizationSettings
-from ..core.base_settings import SimulationSettingsBase, register_objective
-from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
+from ..core.defs import (
+    ObjectiveReturn,
+    WeightsType,
+    RawWeightsType,
+)
+from ..core.base_settings import (
+    SimulationSettings,
+    OptimizationSettings,
+)
+from ..utils.util import save_output
 
+import logging
 import numpy as np
 import optax  # type: ignore
 from pydantic import Field, model_validator
 from typing import Any, Annotated
+
+logger = logging.getLogger(__name__)
 
 
 class OptaxOptimizationSettings(OptimizationSettings):
@@ -70,7 +78,35 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
         return data  # type: ignore
 
-    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
+    def _optax_f(
+        self, settings: SimulationSettings, weights: RawWeightsType
+    ) -> ObjectiveReturn:
+
+        opt = settings.get_objective(self)
+        obj_val, grad = opt(weights)
+        obj = np.sum(np.real(obj_val))
+        if self.apply_connectivity:
+            connectivity, g = settings.connectivity_constraint(optimization=self)
+
+            if connectivity > 0:
+                grad[:] = grad[:] + g[:] * self.connectivity_penalty
+                obj += connectivity * self.connectivity_penalty
+
+        if self.apply_linewidth:
+            fabrication: float
+            fabrication, g = settings.line_width_and_spacing(optimization=self)
+
+            if fabrication > 0:
+                grad[:] = grad[:] + g[:] * self.linewidth_penalty
+                obj += fabrication * self.linewidth_penalty
+
+        self.obj.append(obj)
+        self.weights.append(settings.vector_to_arrays(weights))
+        self.data.append(obj)
+
+        return obj, grad
+
+    def optimize(self, settings: SimulationSettings) -> list[WeightsType]:
         """
         Runs the optimization and stores results. Returns the (projected) optimal
         weights for external stuff if desired
@@ -78,16 +114,12 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
         settings.calculate_normalization()
 
-        num_weights = settings.total_n_raw()
+        num_weights = settings.total_n()
 
         # Initial design weights (arbitrary constant value).
         weights = np.ones((num_weights,)) * 0.5
 
-        apply_masks(
-            masks=settings.get_masks(self.filter_radius),
-            weights=weights,
-            multi_region=settings.is_multi_region(),
-        )
+        settings.apply_masks()
 
         optimal_design_weights = np.zeros_like(weights)
 
@@ -98,10 +130,11 @@ class OptaxOptimizationSettings(OptimizationSettings):
         biases = self.sigmoid_biases
 
         if last_index >= 0:
-            weights = self.weights[-1]
+            last_weights = self.weights[-1]
+            weights = settings.arrays_to_vector(last_weights)
 
-        optimizer = self.optimizer  # type: ignore
-        opt_state = optimizer.init(weights)  # type: ignore
+        optimizer = self.optimizer
+        opt_state = optimizer.init(weights)
 
         for idx, sigmoid_bias in enumerate(
             biases[last_index + 1 :], start=last_index + 1
@@ -110,106 +143,109 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
             self.sigmoid_bias = sigmoid_bias
 
-            opt = settings.create_opt(self)
+            for _ in range(max_eval):
+                _, grad = self._optax_f(
+                    settings=settings,
+                    weights=weights,
+                )
 
-            for i in range(max_eval):
-                val, grad = opt(weights)
-
-                updates, opt_state = optimizer.update(grad, opt_state, weights)  # type: ignore
+                updates, opt_state = optimizer.update(grad, opt_state, weights)
 
                 weights[:] = optax.apply_updates(weights, updates)  # type: ignore
 
+                settings.apply_masks()
+                settings.apply_symmetry()
                 weights[:] = np.clip(weights, 0.0, 1.0)
 
-                apply_masks(
-                    weights=weights,
-                    masks=settings.get_masks(self.filter_radius),
-                    multi_region=settings.is_multi_region(),
-                )
-
-                # outputs
-                print(f"\nstep = {i + 1}")
-                print(f"\tobjective = {np.linalg.norm(np.real(val)):.4e}")
-                print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
-
-            save_output(weights, settings, self, sigmoid_bias)
+            save_output(settings=settings, optimization=self, sigmoid_bias=sigmoid_bias)
 
             self.last_completed_index = idx
 
-        optimal_design_weights = settings.filter_and_project(
-            weights=weights, optimization=self
-        )
+        optimal_design_weights = settings.filter_and_project(optimization=self)
 
-        save_output(weights, settings, self, 0, binarize=True)
+        save_output(settings=settings, optimization=self, sigmoid_bias=0, binarize=True)
 
-        return settings.raw_to_weightslike(optimal_design_weights)
+        return optimal_design_weights
 
 
-@register_objective(SimulationSettingsBase, OptaxOptimizationSettings)
-def _(
-    settings: SimulationSettingsBase, optimization: OptaxOptimizationSettings
-) -> ObjectiveFunction:
-    def get_optax_objective(
-        weights: RawWeightsType,
-    ) -> ObjectiveReturn:
-        """Default objective function used for `optax` optimizations. For simple
-        (single-objective) optimizations, this is sufficient as-is. For
-        more complicated objectives, you will need to customize it for your
-        needs. Weights should not be updated in-place.
-
-        Args:
-            weights (RawWeightsType): List of weights concatenated together.
-
-        Returns:
-            out (ObjectiveReturn): FOM and gradients for the given weights
-        """
-
-        opt = settings.create_opt(optimization)
-        obj_val, grad = opt(
-            settings.filter_and_project(
-                weights=settings.raw_to_weightslike(weights), optimization=optimization
-            )
-        )
-
-        obj: float = np.sum(obj_val)
-
-        grad[:] = tensor_jacobian_product(wrapped_filter_and_project, 0)(
-            weights,
-            settings,
-            optimization,
-            grad,
-        )
-
-        print(
-            f"iteration: {len(optimization.data)}, sigmoid_bias: {optimization.sigmoid_bias}, "
-            f"obj. func.: {obj}, "
-        )
-
-        # Apply penalties:
-        if optimization.apply_connectivity:
-            connectivity, g = settings.connectivity_constraint(
-                weights=weights,
-                optimization=optimization,
-            )
-
-            if connectivity > 0:
-                grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
-                obj += connectivity * optimization.connectivity_penalty
-
-        if optimization.apply_linewidth:
-            fabrication: float
-            fabrication, g = settings.line_width_and_spacing(
-                weights=weights,
-                optimization=optimization,
-            )
-
-            if fabrication > 0:
-                grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
-                obj += fabrication * optimization.connectivity_penalty  # type: ignore
-
-        optimization.obj.append(np.real(obj))  # type: ignore
-        optimization.weights.append(weights.copy())
-
-        return obj_val, grad
-
-    return get_optax_objective
+#
+# @register_objective(SimulationSettings, OptaxOptimizationSettings)
+# def _(
+#     settings: SimulationSettings, optimization: OptaxOptimizationSettings
+# ) -> ObjectiveFunction:
+#     def get_optax_objective(
+#         weights: RawWeightsType,
+#     ) -> ObjectiveReturn:
+#         """Default objective function used for `optax` optimizations. For simple
+#         (single-objective) optimizations, this is sufficient as-is. For
+#         more complicated objectives, you will need to customize it for your
+#         needs. Weights should not be updated in-place.
+#
+#         Args:
+#             weights (RawWeightsType): List of weights concatenated together.
+#
+#         Returns:
+#             out (ObjectiveReturn): FOM and gradients for the given weights
+#         """
+#
+#         settings.update_weights(settings.vector_to_arrays(weights))
+#         settings.apply_masks()
+#         settings.apply_symmetry()
+#
+#         opt = settings.create_opt(optimization)
+#
+#         obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
+#
+#         grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
+#         temp_grads = settings.get_empty_grads()
+#
+#         for dr_i, r in enumerate(settings.design_regions):
+#             for obj_func in range(settings.n_objective_functions):
+#                 for param in range(settings.n_design_parameters):
+#                     r.backpropagate(
+#                         grads[dr_i][obj_func][param], optimization=optimization
+#                     )
+#                     temp_grads[dr_i][obj_func][param][:] = grads[dr_i][obj_func][param]
+#
+#         grad_out = combine_gradients(temp_grads, operation="sum")
+#         grad = np.concatenate(grad_out)
+#
+#         obj: float = np.sum(np.real(obj_val))
+#
+#         logger.info(
+#             f"iteration: {len(optimization.data)}, sigmoid_bias: {optimization.sigmoid_bias}, "
+#             f"obj. func.: {obj}, "
+#         )
+#
+#         # Apply penalties:
+#         if optimization.apply_connectivity:
+#             connectivity, g = settings.connectivity_constraint(
+#                 optimization=optimization
+#             )
+#
+#             if connectivity > 0:
+#                 grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
+#                 obj += connectivity * optimization.connectivity_penalty
+#
+#         if optimization.apply_linewidth:
+#             fabrication: float
+#             fabrication, g = settings.line_width_and_spacing(optimization=optimization)
+#
+#             if fabrication > 0:
+#                 grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
+#                 obj += fabrication * optimization.connectivity_penalty  # type: ignore
+#
+#         optimization.obj.append(np.real(obj))  # type: ignore
+#         optimization.weights.append(settings.vector_to_arrays(weights))
+#         if len(optimization.obj) > 1:
+#             diff = np.abs(optimization.obj[-1] - optimization.obj[-2])
+#             logger.info(f"\tobjective diff: {diff}")
+#             if diff <= 1e-8:
+#                 logger.error(
+#                     "Objective did not change, something is wrong so we are aborting."
+#                 )
+#                 exit()
+#
+#         return obj_val, grad
+#
+#     return get_optax_objective

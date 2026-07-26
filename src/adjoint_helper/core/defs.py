@@ -71,8 +71,10 @@ SimulationReturn = tuple[list[float], list[list[list[RawWeightsType]]]]
 """ Type that we expect from the simulation / backend. """
 
 type ObjectiveReturn = tuple[list[float], RawWeightsType]
-""" Type that we return from a physics objective -- this is a single
-1D vector with exactly one gradient value for each design parameter. """
+""" Type that we return from a physics objective -- a list of objective values and
+a single 1D vector with exactly one gradient value for each design parameter. For most
+optimizers, the objective values get simply summed, so if you want to weight them
+differently, do that in a custom objective function. """
 
 
 @runtime_checkable

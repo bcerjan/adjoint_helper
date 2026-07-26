@@ -17,6 +17,11 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from __future__ import annotations
+import logging
+
+
+from adjoint_helper.utils.logging_utils import setup_logger
+from adjoint_helper.core.defs import combine_gradients, ObjectiveReturn
 
 __all__ = ["SimulationSettings", "OptimizationSettings"]
 
@@ -60,11 +65,21 @@ from .defs import (
 
 DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 
+logger = logging.getLogger(__name__)
+
 
 class OptimizationSettings(BaseModel, ABC):
     """
     Class to store necessary optimization parameters as well as optimization
     history.
+
+    Note that the linewidth sigmoid threshold should probably be the last
+    epoch as it can break the gradient if applied too early. Note that this happens
+    by default, so you don't need to do anything about it (unless you want to override
+    this behavior)
+
+    Note that you probably want the connectivity threshold to be about halfway
+    through your optimization (if using)
     """
 
     model_config = ConfigDict(
@@ -78,20 +93,20 @@ class OptimizationSettings(BaseModel, ABC):
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
     sigmoid_erosion: float = 0.65
-    sigmoid_biases: list[float] = [4, 8, 16, 24, 32, 40]
+    sigmoid_biases: list[float] = DEFAULT_BIASES
     sigmoid_bias: float = -1
     sigmoid_bias_threshold: float = 32
     connectivity_sigmoid_threshold: float = 16
     _apply_connectivity: bool = False
     do_connectivity: bool = False
-    linewidth_sigmoid_threshold: float = 24
-    _apply_linewidth: bool = True
+    linewidth_sigmoid_threshold: float = DEFAULT_BIASES[-1]
+    _apply_linewidth: bool = False
     max_evals: list[int] = Field(default_factory=list)
     _use_epsavg: bool = False
     _use_damping: bool = True
-    maximum_runtime: float = 200
+    maximum_runtime: float = 2000
     minimum_runtime: float = 0
-    decay_by: float = 1e-6
+    decay_by: float = 1e-10
     use_smoothed_projection: bool = False
     last_completed_index: int = -1
     minimum_feature_size: float = 0.05
@@ -108,7 +123,7 @@ class OptimizationSettings(BaseModel, ABC):
         if isinstance(data, dict):
             max_evals = data.get("max_evals")  # type: ignore
             evals = data.pop("evals")
-            biases = data.get("sigmoid_biases", [4, 8, 16, 24, 32, 40])  # type: ignore
+            biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
 
             target_evals = (
                 evals
@@ -119,6 +134,18 @@ class OptimizationSettings(BaseModel, ABC):
                 data["max_evals"] = [target_evals] * len(biases)  # type: ignore
 
         return data  # type: ignore
+
+    @model_validator(mode="before")
+    @classmethod
+    def update_linewidth_threshold(cls, data: Any) -> Any:
+        """Checks if the user explicitly passed in a linewidth threshold value.
+        If they didn't sets it to the last sigmoid_bias supplied."""
+
+        if isinstance(data, dict) and "linewidth_sigmoid_threshold" not in data:
+            biases: list[float] = data.get("sigmoid_biases", DEFAULT_BIASES)
+            data["linewidth_sigmoid_threshold"] = biases[-1]
+
+        return data
 
     @model_validator(mode="after")
     def validate_lengths(self) -> OptimizationSettings:
@@ -142,6 +169,11 @@ class OptimizationSettings(BaseModel, ABC):
     def sigmoid_dilation(self) -> float:
         return 1 - self.sigmoid_erosion
 
+    @computed_field
+    @property
+    def total_iterations(self) -> int:
+        return int(np.sum(self.max_evals))
+
     @property
     def bias(self) -> float:
         idx = (
@@ -153,7 +185,7 @@ class OptimizationSettings(BaseModel, ABC):
 
     @property
     def apply_linewidth(self) -> bool:
-        return (self.bias > self.linewidth_sigmoid_threshold) or self._apply_linewidth
+        return (self.bias >= self.linewidth_sigmoid_threshold) or self._apply_linewidth
 
     @apply_linewidth.setter
     def apply_linewidth(self, val: bool):
@@ -162,7 +194,7 @@ class OptimizationSettings(BaseModel, ABC):
     @property
     def apply_connectivity(self) -> bool:
         return (
-            (self.bias > self.connectivity_sigmoid_threshold) and self.do_connectivity
+            (self.bias >= self.connectivity_sigmoid_threshold) and self.do_connectivity
         ) or self._apply_connectivity
 
     @apply_connectivity.setter
@@ -189,28 +221,6 @@ class OptimizationSettings(BaseModel, ABC):
     def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
         pass
 
-    # @field_serializer("weights")
-    # def serialize_weights(self, weights: list[npt.NDArray[np.float64]], _) -> list[str]:
-    #     """Converts list of arrays to list of base64 strings for JSON."""
-    #     encoded_list: list[str] = []
-    #     for arr in weights:
-    #         buf = io.BytesIO()
-    #         np.save(buf, arr)
-    #         encoded_list.append(base64.b64encode(buf.getvalue()).decode("utf-8"))
-    #     return encoded_list
-    #
-    # @field_validator("weights", mode="before")
-    # @classmethod
-    # def deserialize_weights(cls, v: Any) -> list[npt.NDArray[np.float64]]:
-    #     """Converts base64 strings back to numpy arrays."""
-    #     if isinstance(v, list):
-    #         decoded_list: list[npt.NDArray[np.float64]] = []
-    #         for s in v:  # type: ignore
-    #             buf = io.BytesIO(base64.b64decode(s))  # type: ignore
-    #             decoded_list.append(np.load(buf))
-    #         return decoded_list
-    #     return v
-
 
 class DesignRegion(BaseModel):
     """Class to store information about a single design region and to perform
@@ -232,6 +242,7 @@ class DesignRegion(BaseModel):
     mask: MaskRegion | None = None
     symmetry_func: Callable[[WeightsType], WeightsType] | None = Field(
         default=None,
+        exclude=True,
         description="Function that enforces symmetry on the weights."
         " Should take in weights as a 2D array and return them as the same shape."
         " Note that numpy uses a different ordering, so fliplr corresponds to"
@@ -270,19 +281,26 @@ class DesignRegion(BaseModel):
         """Returns weights reshaped into the 'real' shape"""
         return self.weights.flatten()
 
-    def apply_mask(self) -> None:
-        if self.mask is None:
-            return
-        self.weights[self.mask.locations] = self.mask.value
+    def apply_mask(self, weights: WeightsType | None = None) -> WeightsType:
+        if self.mask is not None:
+            if weights is None:
+                self.weights[self.mask.locations] = self.mask.value
+            else:
+                weights[self.mask.locations] = self.mask.value
+                self.weights[:, :] = weights
+        return self.weights
 
-    def apply_symmetry(self) -> None:
+    def apply_symmetry(self, weights: WeightsType | None = None) -> WeightsType:
         """If this design region should have some kind of enforced
         symmetry, specify how to apply that here. Note that for
         most operations, numpy uses the 'wrong' direction for things,
         so e.g. if you have a left-right symmetry you specify that using
         np.flipud instead of 'lr'"""
         if self.symmetry_func is not None:
-            self.weights = self.symmetry_func(self.weights)
+            self.weights[:, :] = self.symmetry_func(
+                self.weights if weights is None else weights
+            )
+        return self.weights
 
     def unflatten_array(self, arr: RawWeightsType) -> WeightsType:
         return np.reshape(arr, (self.nx_design, self.ny_design))
@@ -330,48 +348,24 @@ class DesignRegion(BaseModel):
         expects gradient to be 1D
         """
 
-        pure_weights = np.array(self.weights, dtype=float)
-        pure_gradient = np.array(self.unflatten_array(gradient), dtype=float)
-        x_size = self.x_size
-        y_size = self.y_size
-        res = self.resolution
+        def _combined_func(weights: WeightsType) -> WeightsType:
+            # We need to do TJP to the symmetry and mask applications
+            # as well, so stack them up here:
+            # self.weights[:, :] = self.filter_and_project(optimization, weights)
+            temp = self.filter_and_project(optimization, weights)
 
-        f_radius = optimization.filter_radius
-        use_epsavg = bool(optimization.use_epsavg)
-        use_smoothed = bool(optimization.use_smoothed_projection)
-        sig_bias = float(optimization.sigmoid_bias)
-        sig_thresh = float(optimization.sigmoid_threshold)
+            if self.symmetry_func is not None:
+                temp = self.symmetry_func(temp)
 
-        def pure_math_mapping(w):
-            weights_filtered = conic_filter(
-                w,
-                f_radius,
-                x_size,
-                y_size,
-                [res],
-            )
+            if self.mask is not None:
+                temp[self.mask.locations] = self.mask.value
 
-            if use_epsavg:
-                if use_smoothed:
-                    return smoothed_projection(
-                        weights_filtered,
-                        sig_bias,
-                        sig_thresh,
-                        res,
-                    )
-                else:
-                    return weights_filtered
-            else:
-                return tanh_projection(
-                    weights_filtered,
-                    sig_bias,
-                    sig_thresh,
-                )
+            return temp
 
-        vjp_func = tensor_jacobian_product(pure_math_mapping, argnum=0)
-
-        vjp_out = vjp_func(pure_weights, pure_gradient)
-        gradient[:] = vjp_out.flatten()
+        out = tensor_jacobian_product(_combined_func, 0)(
+            self.weights, self.unflatten_array(gradient)
+        )
+        gradient[:] = out.flatten()
 
     def line_width_and_spacing_constraint(
         self,
@@ -379,6 +373,9 @@ class DesignRegion(BaseModel):
         optimization: OptimizationSettings,
     ) -> ConstraintReturnType:
         """Constraint function for the minimum line width and spacing.
+           If the abs(max(grad)) < optimization.line_width_tol and
+           npa.linalg.norm(grad) < optimization.line_width_tol the results
+           are discarded to prevent stalls in the optimization process.
 
         Args:
             resolution (int): Resolution of the main grid
@@ -431,6 +428,8 @@ class DesignRegion(BaseModel):
         t1 = (M1(self.weights) - b1) / a1
         t2 = (M2(self.weights) - b1) / a1
 
+        # TODO: Need to backpropagate the gradient here???
+        optimization.connectivity.append(npa.max([t1, t2]))  # type: ignore
         return npa.max([t1, t2]), gradi.flatten()  # type: ignore
 
     def connectivity_constraint(
@@ -451,7 +450,7 @@ class DesignRegion(BaseModel):
         """
 
         if not self.do_connectivity:
-            return (-1, np.zeros(self.weights.flatten().shape))
+            return (0, np.zeros(self.weights.flatten().shape))
 
         proj = self.filter_and_project(optimization=optimization)
 
@@ -555,6 +554,14 @@ class SimulationSettings(BaseModel, ABC):
             raise ValueError("Must have at least one DesignRegion!")
         return self
 
+    @model_validator(mode="after")
+    def enable_logging(self) -> Self:
+        setup_logger()
+
+        logger.debug(f"Logging initialized via {self.__class__.__name__}")
+
+        return self
+
     @computed_field
     @property
     def n_design_regions(self) -> int:
@@ -570,6 +577,19 @@ class SimulationSettings(BaseModel, ABC):
         ret = []
         for dr in self.design_regions:
             ret.append(dr.weights)
+        return ret
+
+    @computed_field
+    @property
+    def weights_raw(self) -> list[RawWeightsType]:
+        if self.enforce_symmetry:
+            self.apply_symmetry()
+        self.apply_masks()
+
+        ret = []
+        for dr in self.design_regions:
+            ret.append(dr.weights_raw)
+
         return ret
 
     def is_multi_region(self) -> bool:
@@ -615,7 +635,7 @@ class SimulationSettings(BaseModel, ABC):
             float | list[float]: "Baseline" value(s) for your optimization problem.
                 E.g. power emitted by a source, ...
         """
-        return 1
+        return 1.0
 
     @abstractmethod
     def create_opt(self, optimization: OptimizationSettings) -> OptimizationFunction:
@@ -676,6 +696,10 @@ class SimulationSettings(BaseModel, ABC):
             ret[start:stop] = flat
             start = stop
 
+        return ret
+
+    def arrays_to_vector_list(self, arrays: list[WeightsType]) -> list[RawWeightsType]:
+        ret = [w.flatten() for w in arrays]
         return ret
 
     def filter_and_project(
@@ -818,3 +842,73 @@ def get_objective(
         )
 
     return best_func(settings, optimization)
+
+
+@register_objective(SimulationSettings, OptimizationSettings)
+def _(
+    settings: SimulationSettings, optimization: OptimizationSettings
+) -> ObjectiveFunction:
+    """Default objective for optimization. Should be sufficient for single-objective
+    optimizations, but supports multiple design regions and multiple design parameters.
+    If you are using multiple objectives or many design parameters, you likely will need
+    to customize your objective function."""
+
+    def get_default_objective(
+        weights: RawWeightsType,
+    ) -> ObjectiveReturn:
+        """Default objective function used for `nlopt` optimizations. For simple
+        (single-objective) optimizations, this is sufficient as-is. For
+        more complicated objectives, you might need to customize it for your
+        needs. Weights should not be updated in-place in this function.
+
+        Args:
+            weights (RawWeightsType): Concatenated design weights for every design region
+
+        Returns:
+            out (ObjectiveReturn): FOM and gradients for the given weights
+        """
+        logger.info(
+            f"weights inside objective: median {np.median(weights)}, min {np.min(weights)} max {np.max(np.abs(weights))}"
+        )
+        settings.update_weights(settings.vector_to_arrays(weights))
+        logger.info(
+            f"settings weights: median {np.median(settings.weights)}, min {np.min(settings.weights)} max {np.max(np.abs(settings.weights))}"
+        )
+        settings.apply_masks()
+        settings.apply_symmetry()
+
+        opt = settings.create_opt(optimization)
+
+        obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
+
+        grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
+        temp_grads = settings.get_empty_grads()
+
+        for dr_i, r in enumerate(settings.design_regions):
+            for obj_func in range(settings.n_objective_functions):
+                for param in range(settings.n_design_parameters):
+                    r.backpropagate(
+                        grads[dr_i][obj_func][param], optimization=optimization
+                    )
+                    temp_grads[dr_i][obj_func][param][:] = grads[dr_i][obj_func][param]
+        grad_out = combine_gradients(temp_grads, operation="sum")
+        vec_out = np.concatenate(grad_out)
+
+        logger.info(
+            f"iteration: {len(optimization.data) + 1} / {optimization.total_iterations}, "
+            f"sigmoid_bias: {optimization.sigmoid_bias}, "
+            f"obj. value: {obj_val}, "
+        )
+
+        idx = optimization.sigmoid_biases.index(optimization.sigmoid_bias)
+        if len(optimization.obj) > optimization.max_evals[idx] // 2:
+            diff = np.abs(optimization.obj[-1] - optimization.obj[-2])
+            logger.info(f"\tobjective diff: {diff}")
+            if diff <= 1e-8:
+                raise ValueError(
+                    "Objective value did not change when it should have, aborting."
+                )
+
+        return obj_val, vec_out
+
+    return get_default_objective
