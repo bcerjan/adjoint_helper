@@ -18,6 +18,7 @@ type meep_opt_return = tuple[meep_obj_val_return, meep_grad_return]
 
 
 def normalize_meep_weights(weights: list[WeightsType]) -> list[RawWeightsType]:
+    """Converts the weights into the format that meep expects"""
     m_weights: list[np.ndarray[tuple[int], np.dtype[np.float64]]] = []
     for w in weights:
         m_weights.append(w.flatten())
