@@ -1,9 +1,12 @@
 __all__ = ["FloatArray1D", "FloatArray2D", "BoolArray2D"]
 import base64
+import logging
 from typing import Any, ClassVar, Dict
 import numpy as np
 from numpy.typing import NDArray
 from pydantic_core import core_schema
+
+logger = logging.getLogger(__name__)
 
 
 class PydanticNDArray(np.ndarray):
@@ -34,7 +37,9 @@ class PydanticNDArray(np.ndarray):
                     raise ValueError(f"Could not convert input to numpy array: {e}")
 
             if arr.dtype != target_type:
-                print(f"Warning: coercing type of input {arr.dtype} to {target_type}")
+                logger.warning(
+                    f"Warning: coercing type of input {arr.dtype} to {target_type}"
+                )
                 arr = arr.astype(target_type)
 
             if cls._ndim is not None and arr.ndim != cls._ndim:
