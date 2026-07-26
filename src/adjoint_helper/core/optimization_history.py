@@ -18,8 +18,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from pydantic import BaseModel, computed_field
 from pathlib import Path
+import logging
+
+from adjoint_helper.utils.logging_utils import am_mpi_master
 
 from ..core.base_settings import SimulationSettings, OptimizationSettings
+
+logger = logging.getLogger(__name__)
 
 
 class OptimizationHistory(BaseModel):
@@ -33,9 +38,10 @@ class OptimizationHistory(BaseModel):
 
     def save_to_json(self) -> None:
         fpath = self.settings.data_dir / self.settings.history_fname
-        with open(fpath, "w") as f:
-            f.write(self.model_dump_json(indent=4))
-        print(f"History saved to {fpath}")
+        if am_mpi_master():
+            with open(fpath, "w") as f:
+                f.write(self.model_dump_json(indent=4))
+            logger.info(f"History saved to {fpath}")
 
     @classmethod
     def load_from_json(
@@ -71,5 +77,5 @@ class OptimizationHistory(BaseModel):
             return hist
 
         except Exception as e:
-            print(f"Error loading history: {e}")
+            logger.error(f"Error loading history: {e}")
             return None
