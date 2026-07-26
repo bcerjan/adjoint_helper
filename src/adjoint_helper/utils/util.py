@@ -20,6 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from ..core.base_settings import OptimizationSettings, SimulationSettings
 from ..core.optimization_history import OptimizationHistory
+from .logging_utils import am_mpi_master
 
 
 def save_output(
@@ -55,44 +56,46 @@ def save_output(
     else:
         s_weights = settings.filter_and_project(optimization=optimization)
 
-    for i, w in enumerate(s_weights):
-        fig, ax = plt.subplots()  # type: ignore
-        ax.imshow(  # type: ignore
-            w.T,
-            cmap="binary",
-            interpolation="none" if not binarize else "spline36",
-            alpha=1.0,
-        )
-        ax.set_axis_off()
+    if am_mpi_master():
+        for i, w in enumerate(s_weights):
+            fig, ax = plt.subplots()  # type: ignore
+            ax.imshow(  # type: ignore
+                w.T,
+                cmap="binary",
+                interpolation="none" if not binarize else "spline36",
+                alpha=1.0,
+            )
+            ax.set_axis_off()
 
-        fig.savefig(  # type: ignore
-            settings.data_dir
-            / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}_region{i}.png",
-            dpi=150,
-            bbox_inches="tight",
-        )
-        # Save the final (unmapped) design as a 2D array in CSV format
-        fname = (
-            f"unmapped_design_weights_beta{sigmoid_bias}_region{i}.csv"
-            if not binarize
-            else f"binarized_design_weights_region{i}.csv"
-        )
-        np.savetxt(
-            settings.data_dir / fname,
-            w,
-            fmt="%4.2f",
-            delimiter=",",
-        )
+            fig.savefig(  # type: ignore
+                settings.data_dir
+                / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}_region{i}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            # Save the final (unmapped) design as a 2D array in CSV format
+            fname = (
+                f"unmapped_design_weights_beta{sigmoid_bias}_region{i}.csv"
+                if not binarize
+                else f"binarized_design_weights_region{i}.csv"
+            )
+            np.savetxt(
+                settings.data_dir / fname,
+                w,
+                fmt="%4.2f",
+                delimiter=",",
+            )
 
-    hist = OptimizationHistory(settings=settings, optimization=optimization)
-    hist.save_to_json(settings.data_dir / settings.history_fname)
+        hist = OptimizationHistory(settings=settings, optimization=optimization)
+        hist.save_to_json()
 
 
 def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
-    plt.figure()  # type: ignore
-    plt.plot(optimization.data, "o-")  # type: ignore
-    plt.yscale("log")  # type: ignore
-    plt.grid(True)  # type: ignore
-    plt.xlabel("Iteration")  # type: ignore
-    plt.ylabel("FOM")  # type: ignore
-    plt.savefig(history_fpath + "FOM.png")  # type: ignore
+    if am_mpi_master():
+        plt.figure()  # type: ignore
+        plt.plot(optimization.data, "o-")  # type: ignore
+        plt.yscale("log")  # type: ignore
+        plt.grid(True)  # type: ignore
+        plt.xlabel("Iteration")  # type: ignore
+        plt.ylabel("FOM")  # type: ignore
+        plt.savefig(history_fpath + "FOM.png")  # type: ignore
