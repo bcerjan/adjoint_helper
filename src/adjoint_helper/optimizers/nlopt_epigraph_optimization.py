@@ -19,13 +19,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 __all__ = ["NloptEpigraphOptimizationSettings"]
 
 from ..core.defs import ObjectiveFunction, ObjectiveReturn, WeightsType, RawWeightsType
-from ..core.export_settings import OptimizationSettings
 from ..core.base_settings import (
-    SimulationSettingsBase,
+    SimulationSettings,
+    OptimizationSettings,
     register_objective,
 )
 from ..core.constraints import tensor_jacobian_product  # type: ignore
-from ..utils.util import save_output, apply_masks, wrapped_filter_and_project
+from ..utils.util import save_output
 
 import numpy as np
 import numpy.typing as npt
@@ -48,72 +48,6 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     objective_constraints: npt.NDArray[np.float64] = np.array([])
     epigraph_min: float = 0
     epigraph_max: float = 1
-
-    # def __init__(
-    #     self,
-    #     optimizer: nlopt.opt,  # Many of these algorithms depend on system size, so you must supply your own
-    #     n_objectives: int,
-    #     epigraph_min: float = 0,
-    #     epigraph_max: float = 1,
-    #     objective_constraints: float | list[float] | None = None,
-    #     minimum_size: float = 0.05,
-    #     sigmoid_bias_threshold: float = 32,  # Sigmoid bias at which eps_avg turns on
-    #     sigmoid_threshold: float = 0.5,  # Eta
-    #     sigmoid_erosion: float = 0.65,  # Eta_e
-    #     sigmoid_biases: list[float] = [4.0, 8, 16, 24, 32, 40],
-    #     connectivity_sigmoid_threshold: float = 16,
-    #     linewidth_sigmoid_threshold: float = 24,  # Sigmoid bias at which line width constraint turns on
-    #     max_evals: list[int] | int = 10,  # if int, all biases get same number
-    #     maximum_runtime: float = 200,
-    #     minimum_runtime: float = 0,
-    #     decay_by: float = 1e-6,
-    #     use_smoothed_projection: bool = False,
-    #     do_connectivity: bool = False,
-    #     linewidth_tol: float = 1e-3,
-    #     connectivity_tol: float = 1e-3,
-    # ):
-    #     self.linewidth_tol = linewidth_tol
-    #     self.connectivity_tol = connectivity_tol
-    #     self.optimizer = optimizer
-
-    #     if n_objectives <= 0:
-    #         raise ValueError("Epigraph formulation requires at least one objective")
-
-    #     self.n_objectives = n_objectives
-
-    #     self.epigraph_min = epigraph_min
-    #     self.epigraph_max = epigraph_max
-
-    #     if objective_constraints is None:
-    #         self.objective_constraints = np.array([1e-6] * self.n_objectives)
-    #     elif isinstance(objective_constraints, (int, float)):
-    #         self.objective_constraints = np.array(
-    #             [objective_constraints] * self.n_objectives
-    #         )
-
-    #     else:
-    #         if len(objective_constraints) != n_objectives:
-    #             raise ValueError(
-    #                 "If supplying individual constraint values, must specify one for every objective."
-    #                 f"Number of objectives ({self.n_objectives}) and number of values ({len(objective_constraints)}) do not match."
-    #             )
-    #         self.objective_constraints = np.array(objective_constraints)
-
-    #     super().__init__(
-    #         minimum_size=minimum_size,
-    #         sigmoid_bias_threshold=sigmoid_bias_threshold,
-    #         sigmoid_threshold=sigmoid_threshold,
-    #         sigmoid_erosion=sigmoid_erosion,
-    #         sigmoid_biases=sigmoid_biases,
-    #         connectivity_sigmoid_threshold=connectivity_sigmoid_threshold,
-    #         linewidth_sigmoid_threshold=linewidth_sigmoid_threshold,
-    #         max_evals=max_evals,
-    #         maximum_runtime=maximum_runtime,
-    #         minimum_runtime=minimum_runtime,
-    #         decay_by=decay_by,
-    #         use_smoothed_projection=use_smoothed_projection,
-    #         do_connectivity=do_connectivity,
-    #     )
 
     @model_validator(mode="before")
     @classmethod
@@ -146,7 +80,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         return self
 
     def reorganize_grads(
-        self, grads: npt.NDArray[np.float64], settings: SimulationSettingsBase
+        self, grads: npt.NDArray[np.float64], settings: SimulationSettings
     ) -> npt.NDArray[np.float64]:
         """Expects that gradients are returned from the optimization in the following
         order: [Obj0[Region0, Region1,...], Obj1[...],...] (but not in nested lists,
@@ -160,7 +94,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             column corresponds to a different objective. (use like: grad[:, i] = ...)
         """
 
-        chunk_size = settings.total_n_raw()
+        chunk_size = settings.total_n()
         ret = np.zeros([chunk_size, self.n_objectives])
         start = 0
         stop = 0
@@ -173,26 +107,42 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
     def _linewidth_cons(
         self,
-        weights: RawWeightsType,
+        epigrah_and_weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
-        spacing, grad[:] = settings.line_width_and_spacing(  # type: ignore
-            weights=settings.raw_to_weightslike(weights), optimization=self
-        )
 
-        return spacing  # type: ignore
+        weights = epigrah_and_weights[1:]
+        settings.update_weights(settings.vector_to_arrays(weights))
+        settings.apply_masks()
+        settings.apply_symmetry()
+
+        spacing, grad_out = settings.line_width_and_spacing(optimization=self)
+
+        if grad_out.size > 0:
+            # a1 hyperparameter from the constraint
+            grad[:, 0] = -1e3
+            grad[:, 1] = grad_out
+
+        return spacing
 
     def _connectivity_cons(
         self,
-        weights: RawWeightsType,
+        epigraph_and_weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
+        weights = epigraph_and_weights[1:]
 
-        connectivity, grad[:] = settings.connectivity_constraint(
-            weights=settings.raw_to_weightslike(weights), optimization=self
-        )
+        settings.update_weights(settings.vector_to_arrays(weights))
+        settings.apply_masks()
+        settings.apply_symmetry()
+
+        connectivity, grad_out = settings.connectivity_constraint(optimization=self)
+        if grad_out.size > 0:
+            # TODO: What should the grad be here?
+            grad[:, 0] = -1e-3
+            grad[:, 1] = grad_out
 
         return connectivity
 
@@ -201,7 +151,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         result: npt.NDArray[np.float64],
         epigraph_and_weights: RawWeightsType,
         gradient: RawWeightsType,
-        settings: SimulationSettingsBase,
+        settings: SimulationSettings,
     ) -> float:
 
         epigraph = epigraph_and_weights[0]
@@ -222,13 +172,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         self.weights.append(epigraph_and_weights[1:].copy())
         self.data.append(epigraph)
 
-        print(f"\nstep = {len(self.weights) + 1}")
-        print(f"\tobjective = {np.linalg.norm(np.real(f0)):.4e}")
-        print(f"\tgrad_norm = {np.linalg.norm(grad):.4e}\n")
-
         return obj
 
-    def optimize(self, settings: SimulationSettingsBase) -> WeightsType:
+    def optimize(self, settings: SimulationSettings) -> list[WeightsType]:
         """_summary_
 
         Args:
@@ -241,15 +187,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
         settings.calculate_normalization()
 
-        lb = np.zeros(settings.total_n_raw())
-        ub = np.ones(settings.total_n_raw())
-        weights = np.ones(settings.total_n_raw()) * 0.5  # add epigraph weight
-
-        apply_masks(
-            weights=weights,
-            masks=settings.get_masks(self.filter_radius),
-            multi_region=settings.is_multi_region(),
-        )
+        lb = np.zeros(settings.total_n())
+        ub = np.ones(settings.total_n())
+        weights = np.concatenate(settings.weights_raw)
 
         self.use_damping = True
 
@@ -319,9 +259,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         return optimal_design_weights
 
 
-@register_objective(SimulationSettingsBase, NloptEpigraphOptimizationSettings)
+@register_objective(SimulationSettings, NloptEpigraphOptimizationSettings)
 def _(
-    settings: SimulationSettingsBase, optimization: NloptEpigraphOptimizationSettings
+    settings: SimulationSettings, optimization: NloptEpigraphOptimizationSettings
 ) -> ObjectiveFunction:
     def get_nlopt_epigraph_objective(
         weights: RawWeightsType,
@@ -350,7 +290,7 @@ def _(
 
         organized = optimization.reorganize_grads(grads=dJ_du, settings=settings)
 
-        grad = np.zeros((settings.total_n_raw(), optimization.n_objectives))
+        grad = np.zeros((settings.total_n(), optimization.n_objectives))
         for k in range(optimization.n_objectives):
             # grad[:, k] = tensor_jacobian_product(settings.filter_and_project, 0)(
             #     weights,

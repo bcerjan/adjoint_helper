@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["OptaxOptimizationSettings"]
 
+from adjoint_helper.core.pydantic_defs import SolverConfig
 from ..core.defs import (
     ObjectiveReturn,
     WeightsType,
@@ -29,13 +30,10 @@ from ..core.base_settings import (
 )
 from ..utils.util import save_output
 
-import logging
 import numpy as np
 import optax  # type: ignore
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 from typing import Any, Annotated
-
-logger = logging.getLogger(__name__)
 
 
 class OptaxOptimizationSettings(OptimizationSettings):
@@ -55,8 +53,9 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
     connectivity_penalty: float = 0.2
     linewidth_penalty: float = 0.2
-    # optimizer: optax.GradientTransformationExtraArgs = Field(exclude=True)  # type:
-    optimizer: Annotated[Any, Field(exclude=True)] = optax.adam(learning_rate=0.2)
+    optimizer: Annotated[Any, Field(exclude=True, repr=False)] = optax.adam(
+        learning_rate=0.2
+    )
     sigmoid_bias_init: float = 4
     sigmoid_bias_scale: float = 1.2
     total_evals: int = 40
@@ -103,6 +102,9 @@ class OptaxOptimizationSettings(OptimizationSettings):
         self.obj.append(obj)
         self.weights.append(settings.vector_to_arrays(weights))
         self.data.append(obj)
+        save_output(
+            settings=settings, optimization=self, sigmoid_bias=self.sigmoid_bias
+        )
 
         return obj, grad
 
@@ -114,31 +116,21 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
         settings.calculate_normalization()
 
-        num_weights = settings.total_n()
-
         # Initial design weights (arbitrary constant value).
-        weights = np.ones((num_weights,)) * 0.5
+        weights: RawWeightsType = np.concatenate(settings.weights_raw)
 
         settings.apply_masks()
 
         optimal_design_weights = np.zeros_like(weights)
 
-        self.use_damping = True
-
         # Handle restarting:
-        last_index = self.last_completed_index
+        _, last_index = self._restart_bias_and_index()
         biases = self.sigmoid_biases
-
-        if last_index >= 0:
-            last_weights = self.weights[-1]
-            weights = settings.arrays_to_vector(last_weights)
 
         optimizer = self.optimizer
         opt_state = optimizer.init(weights)
 
-        for idx, sigmoid_bias in enumerate(
-            biases[last_index + 1 :], start=last_index + 1
-        ):
+        for idx, sigmoid_bias in enumerate(biases[last_index:], start=last_index):
             max_eval = self.max_evals[idx]
 
             self.sigmoid_bias = sigmoid_bias
@@ -157,95 +149,6 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 settings.apply_symmetry()
                 weights[:] = np.clip(weights, 0.0, 1.0)
 
-            save_output(settings=settings, optimization=self, sigmoid_bias=sigmoid_bias)
-
-            self.last_completed_index = idx
-
         optimal_design_weights = settings.filter_and_project(optimization=self)
 
-        save_output(settings=settings, optimization=self, sigmoid_bias=0, binarize=True)
-
         return optimal_design_weights
-
-
-#
-# @register_objective(SimulationSettings, OptaxOptimizationSettings)
-# def _(
-#     settings: SimulationSettings, optimization: OptaxOptimizationSettings
-# ) -> ObjectiveFunction:
-#     def get_optax_objective(
-#         weights: RawWeightsType,
-#     ) -> ObjectiveReturn:
-#         """Default objective function used for `optax` optimizations. For simple
-#         (single-objective) optimizations, this is sufficient as-is. For
-#         more complicated objectives, you will need to customize it for your
-#         needs. Weights should not be updated in-place.
-#
-#         Args:
-#             weights (RawWeightsType): List of weights concatenated together.
-#
-#         Returns:
-#             out (ObjectiveReturn): FOM and gradients for the given weights
-#         """
-#
-#         settings.update_weights(settings.vector_to_arrays(weights))
-#         settings.apply_masks()
-#         settings.apply_symmetry()
-#
-#         opt = settings.create_opt(optimization)
-#
-#         obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
-#
-#         grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
-#         temp_grads = settings.get_empty_grads()
-#
-#         for dr_i, r in enumerate(settings.design_regions):
-#             for obj_func in range(settings.n_objective_functions):
-#                 for param in range(settings.n_design_parameters):
-#                     r.backpropagate(
-#                         grads[dr_i][obj_func][param], optimization=optimization
-#                     )
-#                     temp_grads[dr_i][obj_func][param][:] = grads[dr_i][obj_func][param]
-#
-#         grad_out = combine_gradients(temp_grads, operation="sum")
-#         grad = np.concatenate(grad_out)
-#
-#         obj: float = np.sum(np.real(obj_val))
-#
-#         logger.info(
-#             f"iteration: {len(optimization.data)}, sigmoid_bias: {optimization.sigmoid_bias}, "
-#             f"obj. func.: {obj}, "
-#         )
-#
-#         # Apply penalties:
-#         if optimization.apply_connectivity:
-#             connectivity, g = settings.connectivity_constraint(
-#                 optimization=optimization
-#             )
-#
-#             if connectivity > 0:
-#                 grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
-#                 obj += connectivity * optimization.connectivity_penalty
-#
-#         if optimization.apply_linewidth:
-#             fabrication: float
-#             fabrication, g = settings.line_width_and_spacing(optimization=optimization)
-#
-#             if fabrication > 0:
-#                 grad[:] = grad[:] + g[:] * optimization.connectivity_penalty
-#                 obj += fabrication * optimization.connectivity_penalty  # type: ignore
-#
-#         optimization.obj.append(np.real(obj))  # type: ignore
-#         optimization.weights.append(settings.vector_to_arrays(weights))
-#         if len(optimization.obj) > 1:
-#             diff = np.abs(optimization.obj[-1] - optimization.obj[-2])
-#             logger.info(f"\tobjective diff: {diff}")
-#             if diff <= 1e-8:
-#                 logger.error(
-#                     "Objective did not change, something is wrong so we are aborting."
-#                 )
-#                 exit()
-#
-#         return obj_val, grad
-#
-#     return get_optax_objective

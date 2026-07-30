@@ -18,7 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["NloptOptimizationSettings"]
 
-import logging
+from adjoint_helper.core.pydantic_defs import SolverConfig
 from ..core.defs import (
     WeightsType,
     RawWeightsType,
@@ -31,8 +31,9 @@ from ..utils.util import save_output
 
 import numpy as np
 import nlopt  # type: ignore
-from pydantic import Field
+from pydantic import Field, computed_field
 from typing import List
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,23 @@ class NloptOptimizationSettings(OptimizationSettings):
     linewidth_min_grad: float = 1e-6  # value at which we treat the gradient as 0
     connectivity_tol: float = 1e-3
     connectivity_min_grad: float = 1e-6  # value at which we tread the gradient as 0
-    optimizer: nlopt.opt = Field(exclude=True)
+    optimizer: nlopt.opt = Field(exclude=True, repr=False)
     sigmoid_biases: list[float] = [4, 8, 16, 32, 64, 128]
+    nlopt_params: dict = {}  # Can pass arbitrary settings through this to apply to the solver
+
+    @computed_field
+    @property
+    def solver_config(self) -> SolverConfig:
+        params_dict = {}
+        for i in range(self.optimizer.num_params()):
+            name = self.optimizer.nth_param(i)
+            params_dict[name] = self.optimizer.get_param(name, 0.0)
+
+        return SolverConfig(
+            library="nlopt",
+            algorithm=self.optimizer.get_algorithm_name(),
+            params=params_dict,
+        )
 
     def _linewidth_cons(
         self,
@@ -68,18 +84,11 @@ class NloptOptimizationSettings(OptimizationSettings):
         settings.apply_symmetry()
 
         spacing, grad_out = settings.line_width_and_spacing(optimization=self)
-        logger.info(
-            f"linewidth grad: median {np.median(grad_out)}, min {np.min(grad_out)} max {np.max(np.abs(grad_out))}"
-        )
-        logger.info(f"value: {spacing}")
-        above_min = (
-            np.max(np.abs(grad_out)) > self.linewidth_min_grad
-            or np.linalg.norm(grad_out) > self.linewidth_min_grad
-        )
+
         if grad_out.size > 0:
             grad[:] = grad_out
 
-        return spacing if above_min else 0
+        return spacing
 
     def _connectivity_cons(
         self,
@@ -93,14 +102,10 @@ class NloptOptimizationSettings(OptimizationSettings):
         settings.apply_symmetry()
 
         connectivity, grad_out = settings.connectivity_constraint(optimization=self)
-        above_min = (
-            np.max(np.abs(grad_out)) > self.connectivity_min_grad
-            or np.linalg.norm(grad_out) > self.connectivity_min_grad
-        )
         if grad_out.size > 0:
             grad[:] = grad_out
 
-        return connectivity if above_min else 0
+        return connectivity
 
     def _nlopt_objective_f(
         self,
@@ -118,9 +123,6 @@ class NloptOptimizationSettings(OptimizationSettings):
         Updates gradient in-place
         """
 
-        logger.info(
-            f"weights: median {np.median(weights)}, min {np.min(weights)} max {np.max(np.abs(weights))}"
-        )
         opt = settings.get_objective(self)
         f0, vec_out = opt(weights)
 
@@ -131,6 +133,7 @@ class NloptOptimizationSettings(OptimizationSettings):
         self.obj.append(obj)
         self.weights.append(settings.vector_to_arrays(weights))
         self.data.append(obj)
+        save_output(settings, self, self.sigmoid_bias)
 
         return obj
 
@@ -149,23 +152,15 @@ class NloptOptimizationSettings(OptimizationSettings):
 
         lb = np.zeros(settings.total_n())
         ub = np.ones(settings.total_n())
-        weights: RawWeightsType = np.ones(settings.total_n()) * 0.5
+        weights: RawWeightsType = np.concatenate(settings.weights_raw)
 
         settings.apply_masks()
 
-        self.use_damping = True
-
         # Handle restarting:
-        last_index = self.last_completed_index
+        _, last_index = self._restart_bias_and_index()
         biases = self.sigmoid_biases
 
-        if last_index >= 0:
-            last_weights = self.weights[-1]
-            weights = settings.arrays_to_vector(last_weights)
-
-        for i, sigmoid_bias in enumerate(
-            biases[last_index + 1 :], start=last_index + 1
-        ):
+        for i, sigmoid_bias in enumerate(biases[last_index:], start=last_index):
             self.sigmoid_bias = sigmoid_bias
             solver = nlopt.opt(self.optimizer)
             solver.set_lower_bounds(lb)  # type: ignore
@@ -189,20 +184,17 @@ class NloptOptimizationSettings(OptimizationSettings):
                     self.connectivity_tol,
                 )
 
-            # solver.set_ftol_rel(1e-5)
-            # solver.set_param("dual_ftol_rel", 1e-8)  # type: ignore
-
-            # Note: this needs to be set _after_ you set use_epsavg above, or that
-            # doesn't work, and then things get bad.
             solver.set_min_objective(  # type: ignore
                 lambda x, g: self._nlopt_objective_f(x, g, settings)  # pyright: ignore[reportUnknownArgumentType]
             )
 
+            for k, v in self.nlopt_params:
+                solver.set_param(k, v)
+
             weights[:] = solver.optimize(weights)
 
             settings.update_weights(settings.vector_to_arrays(weights))
-            save_output(settings, self, sigmoid_bias)
-            self.last_completed_index = i
+            logger.info(f"last index: {self.last_completed_index} i: {i}")
 
         optimal_design_weights = settings.filter_and_project(optimization=self)
 
