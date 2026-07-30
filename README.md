@@ -31,7 +31,7 @@ pip install adjoint_helper[diffusion]
 If you want to use [nlopt](https://nlopt.readthedocs.io/en/latest/) you should create a conda environment first and then use it to install pip so you can install adjoint_helper:
 
 ```bash
-conda crate -n adjoint_helper
+conda create -n adjoint_helper
 conda install -c conda-forge nlopt
 conda install pip
 pip install adjoint_helper
@@ -59,3 +59,31 @@ optimization.optimize(settings)
 ```
 
 Clearly, this elides pretty much all the interesting pieces, so look in the `examples` directory for full examples that demonstrate the use of the package.
+
+### Important Notes for Save/Load
+
+#### General
+
+When loading and restarting, the optimization will start at the same sigmoid bias
+it last completed, but at the first evaluation thereof (as a safe general assumption).
+For example, if you had `sigmoid_biases = [4,16]` and `max_evals = [10, 20]` and 15
+iterations had been completed, when restarting it would begin at `sigmoid_bias = 20` but
+`iteration = 10` (that is, we finished all the `4` iterations and are now starting
+on `16`)
+
+#### Optimizer
+
+Currently there is not a good way to store the state/configuration of the
+optimizer, so you must re-pass it in when loading again.
+
+#### Settings
+
+At present there isn't a method for storing the symmetry functions passed
+to a `DesignRegion` so they must be re-applied after a load:
+
+```python
+hist = OptimizationHistory.load_if_exists(settings=settings, optimizer=optimizer)
+if hist is not None:
+  for dr in hist.settings.design_regions:
+    dr.symmetry_func = lambda w: w/2 + npa.flipud(w/2)
+```
