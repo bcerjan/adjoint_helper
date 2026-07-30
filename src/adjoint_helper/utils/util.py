@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from ..core.base_settings import OptimizationSettings, SimulationSettings
 from ..core.optimization_history import OptimizationHistory
 from .logging_utils import am_mpi_master
@@ -39,8 +40,6 @@ def save_output(
     :type optimization: OptimizationSettings
     :param sigmoid_bias: Current sigmoid bias for when the save ocurrs
     :type sigmoid_bias: float
-    :param history_fpath: Where should the .pkl file be stored?
-    :type history_fpath: str
     :param binarize: If true, force weights to be binarized to 0/1. If true,
         this also updates optimization.sigmoid_bias. Be sure to reset it
         if you intend to use it again afterwards.
@@ -53,6 +52,8 @@ def save_output(
     s_weights = []
     if binarize:
         s_weights = settings.binarize_weights(optimization)
+        for i, ws in enumerate(s_weights):
+            s_weights[i][:, :] = np.where(ws >= 0.5, 1, 0)
     else:
         s_weights = settings.filter_and_project(optimization=optimization)
 
@@ -67,6 +68,7 @@ def save_output(
             )
             ax.set_axis_off()
 
+            settings.data_dir.mkdir(parents=True, exist_ok=True)
             fig.savefig(  # type: ignore
                 settings.data_dir
                 / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}_region{i}.png",
@@ -92,10 +94,12 @@ def save_output(
 
 def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
     if am_mpi_master():
+        path = Path(history_fpath).resolve()
+        path.mkdir(parents=True, exist_ok=True)
         plt.figure()  # type: ignore
         plt.plot(optimization.data, "o-")  # type: ignore
         plt.yscale("log")  # type: ignore
         plt.grid(True)  # type: ignore
         plt.xlabel("Iteration")  # type: ignore
         plt.ylabel("FOM")  # type: ignore
-        plt.savefig(history_fpath + "FOM.png")  # type: ignore
+        plt.savefig(path + "FOM.png")  # type: ignore
