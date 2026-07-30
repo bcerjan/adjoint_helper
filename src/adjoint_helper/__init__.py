@@ -32,8 +32,3 @@ from .core.defs import (
 from .core.optimization_history import OptimizationHistory
 from .utils.util import save_fom_history, save_output
 from .utils.normalization_functions import normalize_meep_output
-
-# from .optimizers.nlopt_optimization import NloptOptimizationSettings
-# from .optimizers.optax_optimization import OptaxOptimizationSettings
-# from .optimizers.nlopt_epigraph_optimization import NloptEpigraphOptimizationSettings
-# from .optimizers.diffusion_optimization import AdjointDiffusionSettings # Not ready yet
