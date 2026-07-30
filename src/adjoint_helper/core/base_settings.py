@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 
+from adjoint_helper.core.pydantic_defs import SolverConfig
 from adjoint_helper.utils.logging_utils import setup_logger
 from adjoint_helper.core.defs import combine_gradients, ObjectiveReturn
 
@@ -108,21 +109,21 @@ class OptimizationSettings(BaseModel, ABC):
     minimum_runtime: float = 0
     decay_by: float = 1e-10
     use_smoothed_projection: bool = False
-    last_completed_index: int = -1
     minimum_feature_size: float = 0.05
 
     evals: int | None = Field(default=None, exclude=True, repr=False)
+    optimizer: Any = Field(exclude=True, repr=False)
 
     @model_validator(mode="before")
     @classmethod
     def expand_evals(cls, data: Any) -> Any:
         """
-        Expands max_evals if passed as int. Update default below if you update
+        Expands evals if passed as int. Update default below if you update
         them above.
         """
         if isinstance(data, dict):
             max_evals = data.get("max_evals")  # type: ignore
-            evals = data.pop("evals")
+            evals = data.pop("evals", None)
             biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
 
             target_evals = (
@@ -174,6 +175,22 @@ class OptimizationSettings(BaseModel, ABC):
     def total_iterations(self) -> int:
         return int(np.sum(self.max_evals))
 
+    @computed_field
+    @property
+    @abstractmethod
+    def solver_config(self) -> SolverConfig:
+        pass
+
+    @computed_field
+    @property
+    def class_path(self) -> str:
+        return f"{self.__class__.__module__}.{self.__class__.__name__}"
+
+    @computed_field
+    @property
+    def last_completed_index(self) -> int:
+        return len(self.obj) - 1
+
     @property
     def bias(self) -> float:
         idx = (
@@ -220,6 +237,26 @@ class OptimizationSettings(BaseModel, ABC):
     @abstractmethod
     def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
         pass
+
+    def _restart_bias_and_index(self) -> tuple[float, int]:
+        if self.last_completed_index < 0:
+            return (self.sigmoid_biases[0], 0)
+
+        # We assume we used all the available iterations at each step --
+        # this might set us back a bit, but it seems like a better assumption
+        # than the alternative
+
+        target = self.last_completed_index
+        current = 0
+        for i, evals in enumerate(self.max_evals):
+            current += evals
+            if target < evals:
+                return (self.sigmoid_biases[i], i)
+
+        raise ValueError(
+            f"Optimization tried to restart at iteration {target}, "
+            f"but that is past the total number of iterations ({self.total_iterations})"
+        )
 
 
 class DesignRegion(BaseModel):
@@ -412,25 +449,33 @@ class DesignRegion(BaseModel):
 
         def M1(a: npt.NDArray[np.float64]) -> float:
             return constraint_solid(  # type: ignore
-                a, c0, optimization.sigmoid_erosion, filter_func, threshold_func, 1
+                a, c0, optimization.sigmoid_erosion, filter_func, threshold_func, [0, 1]
             )
 
         def M2(a: npt.NDArray[np.float64]) -> float:
             return constraint_void(  # type: ignore
-                a, c0, optimization.sigmoid_dilation, filter_func, threshold_func, 1
+                a,
+                c0,
+                optimization.sigmoid_dilation,
+                filter_func,
+                threshold_func,
+                [0, 1],
             )
 
-        g1 = grad(M1)(self.weights)  # type: ignore
-        g2 = grad(M2)(self.weights)  # type: ignore
-
-        gradi = g1 + g2  # type: ignore
+        g1 = grad(M1, 0)(self.weights)  # type: ignore
+        g2 = grad(M2, 0)(self.weights)  # type: ignore
 
         t1 = (M1(self.weights) - b1) / a1
         t2 = (M2(self.weights) - b1) / a1
+        max = npa.max([t1, t2])  # type: ignore
 
-        # TODO: Need to backpropagate the gradient here???
-        optimization.connectivity.append(npa.max([t1, t2]))  # type: ignore
-        return npa.max([t1, t2]), gradi.flatten()  # type: ignore
+        if max == t1:
+            gradi = g1
+        else:
+            gradi = g2
+
+        optimization.connectivity.append(max)  # type: ignore
+        return max, gradi.flatten()  # type: ignore
 
     def connectivity_constraint(
         self,
@@ -591,6 +636,16 @@ class SimulationSettings(BaseModel, ABC):
             ret.append(dr.weights_raw)
 
         return ret
+
+    @computed_field
+    @property
+    def history_path(self) -> Path:
+        return self.data_dir / self.history_fname
+
+    @computed_field
+    @property
+    def class_path(self) -> str:
+        return f"{self.__class__.__module__}.{self.__class__.__name__}"
 
     def is_multi_region(self) -> bool:
         return len(self.design_regions) > 1
@@ -775,11 +830,18 @@ class SimulationSettings(BaseModel, ABC):
     ) -> ObjectiveFunction:
         return get_objective(self, optimization)
 
+    @classmethod
+    def _get_class_identity_string(cls):
+        return f"{cls.__module__}.{cls.__name__}"
+
     def get_fingerprint(self) -> str:
         core_params: dict[str, Any] = {
             "resolution": self.resolution,
             "total_n": self.total_n(),
             "n_design_regions": self.n_design_regions,
+            "n_design_parameters": self.n_design_parameters,
+            "n_objective_functions": self.n_objective_functions,
+            "class_identity_string": self._get_class_identity_string(),
         }
 
         idx = 0
@@ -867,13 +929,7 @@ def _(
         Returns:
             out (ObjectiveReturn): FOM and gradients for the given weights
         """
-        logger.info(
-            f"weights inside objective: median {np.median(weights)}, min {np.min(weights)} max {np.max(np.abs(weights))}"
-        )
         settings.update_weights(settings.vector_to_arrays(weights))
-        logger.info(
-            f"settings weights: median {np.median(settings.weights)}, min {np.min(settings.weights)} max {np.max(np.abs(settings.weights))}"
-        )
         settings.apply_masks()
         settings.apply_symmetry()
 
@@ -899,15 +955,6 @@ def _(
             f"sigmoid_bias: {optimization.sigmoid_bias}, "
             f"obj. value: {obj_val}, "
         )
-
-        idx = optimization.sigmoid_biases.index(optimization.sigmoid_bias)
-        if len(optimization.obj) > optimization.max_evals[idx] // 2:
-            diff = np.abs(optimization.obj[-1] - optimization.obj[-2])
-            logger.info(f"\tobjective diff: {diff}")
-            if diff <= 1e-8:
-                raise ValueError(
-                    "Objective value did not change when it should have, aborting."
-                )
 
         return obj_val, vec_out
 
