@@ -27,7 +27,7 @@ from ..core.base_settings import (
     SimulationSettings,
     OptimizationSettings,
 )
-from ..utils.util import save_output
+from ..utils.util import save_fom_history, save_output
 
 import numpy as np
 import nlopt  # type: ignore
@@ -125,13 +125,12 @@ class NloptOptimizationSettings(OptimizationSettings):
 
         opt = settings.get_objective(self)
         f0, vec_out = opt(weights)
-
         if grad is not None and grad.size > 0:
             grad[:] = vec_out
 
         obj: float = np.sum(np.real(f0))
         self.obj.append(obj)
-        self.weights.append(settings.vector_to_arrays(weights))
+        self.weights.append(settings.vector_to_arrays(weights.copy()))
         self.data.append(obj)
         save_output(settings, self, self.sigmoid_bias)
 
@@ -157,12 +156,13 @@ class NloptOptimizationSettings(OptimizationSettings):
         settings.apply_masks()
 
         # Handle restarting:
-        _, last_index = self._restart_bias_and_index()
+        _, last_index = self._current_bias_and_index()
         biases = self.sigmoid_biases
 
         for i, sigmoid_bias in enumerate(biases[last_index:], start=last_index):
             self.sigmoid_bias = sigmoid_bias
             solver = nlopt.opt(self.optimizer)
+            solver.set_exceptions_enabled(True)
             solver.set_lower_bounds(lb)  # type: ignore
             solver.set_upper_bounds(ub)  # type: ignore
 
@@ -194,10 +194,10 @@ class NloptOptimizationSettings(OptimizationSettings):
             weights[:] = solver.optimize(weights)
 
             settings.update_weights(settings.vector_to_arrays(weights))
-            logger.info(f"last index: {self.last_completed_index} i: {i}")
 
         optimal_design_weights = settings.filter_and_project(optimization=self)
 
         save_output(settings, self, 0, binarize=True)
+        save_fom_history(optimization=self, history_dir=settings.data_dir)
 
         return optimal_design_weights
