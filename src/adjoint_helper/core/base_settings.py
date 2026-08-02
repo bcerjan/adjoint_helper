@@ -193,12 +193,8 @@ class OptimizationSettings(BaseModel, ABC):
 
     @property
     def bias(self) -> float:
-        idx = (
-            self.last_completed_index + 1
-            if self.last_completed_index + 1 < len(self.sigmoid_biases)
-            else self.last_completed_index
-        )
-        return self.sigmoid_biases[idx]
+        bias, _ = self._current_bias_and_index()
+        return bias
 
     @property
     def apply_linewidth(self) -> bool:
@@ -238,7 +234,7 @@ class OptimizationSettings(BaseModel, ABC):
     def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
         pass
 
-    def _restart_bias_and_index(self) -> tuple[float, int]:
+    def _current_bias_and_index(self) -> tuple[float, int]:
         if self.last_completed_index < 0:
             return (self.sigmoid_biases[0], 0)
 
@@ -250,7 +246,7 @@ class OptimizationSettings(BaseModel, ABC):
         current = 0
         for i, evals in enumerate(self.max_evals):
             current += evals
-            if target < evals:
+            if target < current:
                 return (self.sigmoid_biases[i], i)
 
         raise ValueError(
@@ -321,10 +317,10 @@ class DesignRegion(BaseModel):
     def apply_mask(self, weights: WeightsType | None = None) -> WeightsType:
         if self.mask is not None:
             if weights is None:
-                self.weights[self.mask.locations] = self.mask.value
-            else:
-                weights[self.mask.locations] = self.mask.value
-                self.weights[:, :] = weights
+                weights = self.weights
+                # self.weights[self.mask.locations] = self.mask.value
+            weights[self.mask.locations] = self.mask.value
+            self.weights = weights
         return self.weights
 
     def apply_symmetry(self, weights: WeightsType | None = None) -> WeightsType:
@@ -334,7 +330,10 @@ class DesignRegion(BaseModel):
         so e.g. if you have a left-right symmetry you specify that using
         np.flipud instead of 'lr'"""
         if self.symmetry_func is not None:
-            self.weights[:, :] = self.symmetry_func(
+            # self.weights[:, :] = self.symmetry_func(
+            #     self.weights if weights is None else weights
+            # )
+            self.weights = self.symmetry_func(
                 self.weights if weights is None else weights
             )
         return self.weights
@@ -561,6 +560,34 @@ class DesignRegion(BaseModel):
         param_str = json.dumps(core_params, sort_keys=True)
         return hashlib.sha3_256(param_str.encode()).hexdigest()
 
+    def binarize_weights(self, optimization: OptimizationSettings) -> WeightsType:
+        bias = optimization.sigmoid_bias
+        optimization.sigmoid_bias = np.inf
+        ret = self.filter_and_project(optimization=optimization)
+
+        ret[:, :] = np.where(ret >= 0.5, 1, 0)
+        optimization.sigmoid_bias = bias
+        return ret
+
+    def output_csv(
+        self,
+        fpath: Path,
+        optimization: OptimizationSettings,
+        binarize: bool = False,
+    ) -> None:
+        w = (
+            self.binarize_weights(optimization=optimization)
+            if binarize
+            else self.filter_and_project(optimization=optimization)
+        )
+
+        np.savetxt(
+            fpath,
+            w,
+            fmt="%4.2f",
+            delimiter=",",
+        )
+
 
 class SimulationSettings(BaseModel, ABC):
     """
@@ -671,7 +698,7 @@ class SimulationSettings(BaseModel, ABC):
         return [
             [
                 [
-                    np.zeros(r.weights.flatten().shape)
+                    np.zeros((r.total_n,), dtype=np.float64)
                     for _ in range(self.n_design_parameters)
                 ]
                 for _ in range(self.n_objective_functions)
@@ -728,7 +755,8 @@ class SimulationSettings(BaseModel, ABC):
             )
 
         for i, r in enumerate(self.design_regions):
-            r.weights[:, :] = new_weights[i]
+            # r.weights[:, :] = new_weights[i]
+            r.weights = new_weights[i]
 
     def vector_to_arrays(self, vec: RawWeightsType) -> List[WeightsType]:
         """Split the vector into pieces for each design region"""
@@ -815,13 +843,10 @@ class SimulationSettings(BaseModel, ABC):
     def binarize_weights(self, optimization: OptimizationSettings) -> List[WeightsType]:
         """Returns a binarized version of the internal weights."""
 
-        bias = optimization.sigmoid_bias
-        optimization.sigmoid_bias = np.inf
         ret = []
         for r in self.design_regions:
-            ret.append(r.filter_and_project(optimization=optimization))
+            ret.append(r.binarize_weights(optimization=optimization))
 
-        optimization.sigmoid_bias = bias
         return ret
 
     def get_objective(
@@ -850,6 +875,18 @@ class SimulationSettings(BaseModel, ABC):
 
         param_str = json.dumps(core_params, sort_keys=True)
         return hashlib.sha3_256(param_str.encode()).hexdigest()
+
+    def output_csv_all(
+        self, optimization: OptimizationSettings, binarize: bool = False
+    ) -> None:
+        for i, dr in enumerate(self.design_regions):
+            fname = (
+                f"unmapped_design_weights_beta{optimization.bias}_region{i}.csv"
+                if not binarize
+                else f"binarized_design_weights_region{i}.csv"
+            )
+            fpath = self.data_dir / fname
+            dr.output_csv(optimization=optimization, fpath=fpath)
 
 
 RegistryKey = tuple[type, type]
@@ -937,8 +974,10 @@ def _(
 
         obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
 
-        grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
+        # grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
+        grad_out = np.zeros_like(grads, dtype=np.float64)
         temp_grads = settings.get_empty_grads()
+        # temp_grads = np.zeros_like(grads, dtype=np.float64)
 
         for dr_i, r in enumerate(settings.design_regions):
             for obj_func in range(settings.n_objective_functions):
@@ -951,9 +990,9 @@ def _(
         vec_out = np.concatenate(grad_out)
 
         logger.info(
-            f"iteration: {len(optimization.data) + 1} / {optimization.total_iterations}, "
+            f"iteration: {len(optimization.data) + 1}, "
             f"sigmoid_bias: {optimization.sigmoid_bias}, "
-            f"obj. value: {obj_val}, "
+            f"obj. value: {obj_val}"
         )
 
         return obj_val, vec_out
