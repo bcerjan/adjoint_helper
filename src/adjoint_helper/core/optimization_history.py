@@ -44,22 +44,15 @@ class OptimizationHistory(BaseModel):
     def save_to_json(self) -> None:
         fpath = self.settings.data_dir / self.settings.history_fname
         if am_mpi_master():
-            logger.info("Starting pydantic")
             fpath.parent.mkdir(parents=True, exist_ok=True)
-            w = self.settings.weights.copy()
-            self.settings.update_weights(w)
-            logger.info("Updated weights")
             data = self.model_dump()
-            logger.info("Dumped Model")
 
             settings_dict = self.settings.model_dump()
-            logger.info("Dumped Settings")
             settings_dict["__class_path__"] = self.settings.class_path
 
             data["settings"] = settings_dict
 
             opt_dict = self.optimization.model_dump()
-            logger.info("Dumped Optimization")
             opt_dict["__class_path__"] = self.optimization.class_path
 
             data["optimization"] = opt_dict
