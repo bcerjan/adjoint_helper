@@ -75,6 +75,7 @@ def save_output(
                 dpi=150,
                 bbox_inches="tight",
             )
+            plt.close(fig)
 
         # Save the final (unmapped) design as a 2D array in CSV format
         settings.output_csv_all(optimization=optimization, binarize=binarize)
@@ -83,6 +84,7 @@ def save_output(
         hist.save_to_json()
 
 
+# TODO: Possibly make this dynamic based on the sign of FOM?
 def save_fom_history(optimization: OptimizationSettings, history_dir: Path) -> None:
     if am_mpi_master():
         history_dir.mkdir(parents=True, exist_ok=True)
