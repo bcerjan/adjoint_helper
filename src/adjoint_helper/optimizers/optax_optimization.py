@@ -28,11 +28,11 @@ from ..core.base_settings import (
     SimulationSettings,
     OptimizationSettings,
 )
-from ..utils.util import save_output
+from ..utils.util import save_fom_history, save_output
 
 import numpy as np
 import optax  # type: ignore
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, model_validator
 from typing import Any, Annotated
 
 
@@ -76,6 +76,10 @@ class OptaxOptimizationSettings(OptimizationSettings):
                     data["sigmoid_biases"] = [init * scale**i for i in range(n)]
 
         return data  # type: ignore
+
+    @property
+    def solver_config(self) -> SolverConfig:
+        return super().solver_config
 
     def _optax_f(
         self, settings: SimulationSettings, weights: RawWeightsType
@@ -124,7 +128,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
         optimal_design_weights = np.zeros_like(weights)
 
         # Handle restarting:
-        _, last_index = self._restart_bias_and_index()
+        _, last_index = self._current_bias_and_index()
         biases = self.sigmoid_biases
 
         optimizer = self.optimizer
@@ -150,5 +154,8 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 weights[:] = np.clip(weights, 0.0, 1.0)
 
         optimal_design_weights = settings.filter_and_project(optimization=self)
+
+        save_output(settings, self, 0, binarize=True)
+        save_fom_history(optimization=self, history_dir=settings.data_dir)
 
         return optimal_design_weights
