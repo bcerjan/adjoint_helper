@@ -52,11 +52,11 @@ def save_output(
     s_weights = []
     if binarize:
         s_weights = settings.binarize_weights(optimization)
-        for i, ws in enumerate(s_weights):
-            s_weights[i][:, :] = np.where(ws >= 0.5, 1, 0)
     else:
         s_weights = settings.filter_and_project(optimization=optimization)
 
+    # TODO: Should figure output be moved into the DesignRegion also?
+    # Probably?
     if am_mpi_master():
         for i, w in enumerate(s_weights):
             fig, ax = plt.subplots()  # type: ignore
@@ -75,31 +75,21 @@ def save_output(
                 dpi=150,
                 bbox_inches="tight",
             )
-            # Save the final (unmapped) design as a 2D array in CSV format
-            fname = (
-                f"unmapped_design_weights_beta{sigmoid_bias}_region{i}.csv"
-                if not binarize
-                else f"binarized_design_weights_region{i}.csv"
-            )
-            np.savetxt(
-                settings.data_dir / fname,
-                w,
-                fmt="%4.2f",
-                delimiter=",",
-            )
+
+        # Save the final (unmapped) design as a 2D array in CSV format
+        settings.output_csv_all(optimization=optimization, binarize=binarize)
 
         hist = OptimizationHistory(settings=settings, optimization=optimization)
         hist.save_to_json()
 
 
-def save_fom_history(optimization: OptimizationSettings, history_fpath: str) -> None:
+def save_fom_history(optimization: OptimizationSettings, history_dir: Path) -> None:
     if am_mpi_master():
-        path = Path(history_fpath).resolve()
-        path.mkdir(parents=True, exist_ok=True)
+        history_dir.mkdir(parents=True, exist_ok=True)
         plt.figure()  # type: ignore
         plt.plot(optimization.data, "o-")  # type: ignore
-        plt.yscale("log")  # type: ignore
+        # plt.yscale("log")  # type: ignore
         plt.grid(True)  # type: ignore
         plt.xlabel("Iteration")  # type: ignore
         plt.ylabel("FOM")  # type: ignore
-        plt.savefig(path + "FOM.png")  # type: ignore
+        plt.savefig(history_dir / "FOM.png")  # type: ignore
