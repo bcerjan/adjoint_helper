@@ -330,10 +330,7 @@ class DesignRegion(BaseModel):
         so e.g. if you have a left-right symmetry you specify that using
         np.flipud instead of 'lr'"""
         if self.symmetry_func is not None:
-            # self.weights[:, :] = self.symmetry_func(
-            #     self.weights if weights is None else weights
-            # )
-            self.weights = self.symmetry_func(
+            self.weights[:, :] = self.symmetry_func(
                 self.weights if weights is None else weights
             )
         return self.weights
@@ -387,7 +384,6 @@ class DesignRegion(BaseModel):
         def _combined_func(weights: WeightsType) -> WeightsType:
             # We need to do TJP to the symmetry and mask applications
             # as well, so stack them up here:
-            # self.weights[:, :] = self.filter_and_project(optimization, weights)
             temp = self.filter_and_project(optimization, weights)
 
             if self.symmetry_func is not None:
@@ -755,8 +751,7 @@ class SimulationSettings(BaseModel, ABC):
             )
 
         for i, r in enumerate(self.design_regions):
-            # r.weights[:, :] = new_weights[i]
-            r.weights = new_weights[i]
+            r.weights[:, :] = new_weights[i]
 
     def vector_to_arrays(self, vec: RawWeightsType) -> List[WeightsType]:
         """Split the vector into pieces for each design region"""
