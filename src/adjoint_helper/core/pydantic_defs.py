@@ -1,10 +1,11 @@
-__all__ = ["FloatArray1D", "FloatArray2D", "BoolArray2D"]
+__all__ = ["BoolArray2D", "FloatArray1D", "FloatArray2D"]
 import base64
 import logging
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar
+
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import Field, BaseModel
+from pydantic import BaseModel, Field
 from pydantic_core import core_schema
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class PydanticNDArray(np.ndarray):
 
             return arr
 
-        def serialize(v: np.ndarray) -> Dict[str, Any]:
+        def serialize(v: np.ndarray) -> dict[str, Any]:
             raw_bytes = base64.b64encode(v.tobytes()).decode("utf-8")
             return {"shape": list(v.shape), "dtype": str(v.dtype), "bytes": raw_bytes}
 
@@ -103,7 +104,7 @@ checks needed for that algorithm)
 class SolverConfig(BaseModel):
     library: str
     algorithm: str
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class SolverFactory:
@@ -125,7 +126,7 @@ class SolverFactory:
             return SolverFactory._build_optax(config.algorithm, config.params)
 
     @staticmethod
-    def _build_optax(algo_name: str, params: Dict[str, Any]):
+    def _build_optax(algo_name: str, params: dict[str, Any]):
         import optax
 
         ALGO_MAP = {

@@ -18,21 +18,21 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = [
     "Edge",
-    "ObjectiveReturn",
-    "ObjectiveFunction",
-    "OptimizationFunction",
     "MaskRegion",
-    "WeightsType",
+    "ObjectiveFunction",
+    "ObjectiveReturn",
+    "OptimizationFunction",
     "RawWeightsType",
+    "WeightsType",
 ]
 
+from collections.abc import Iterable
 from enum import Enum
 from typing import (
     Annotated,
-    Iterable,
-    List,
+    Callable,
     Protocol,
-    Tuple,
+    TypeVar,
     runtime_checkable,
 )
 
@@ -51,7 +51,7 @@ class Edge(Enum):
 
 
 type WeightsType = Annotated[
-    np.ndarray[Tuple[int, int], np.dtype[np.float64]], FloatArray2D
+    np.ndarray[tuple[int, int], np.dtype[np.float64]], FloatArray2D
 ]
 """Weights laid out 'correctly' (that is, a 2D matrix).
 """
@@ -74,7 +74,14 @@ type ObjectiveReturn = tuple[list[float], RawWeightsType]
 """ Type that we return from a physics objective -- a list of objective values and
 a single 1D vector with exactly one gradient value for each design parameter. For most
 optimizers, the objective values get simply summed, so if you want to weight them
-differently, do that in a custom objective function. """
+differently, do that in a custom objective function. 
+
+In general, your objective should probably return only a single value for
+relatively simple simulations (as noted, if you use the defaults, multiple
+objectives will simply be summed). For the epigraph formulation of nlopt,
+then you should actually return a list of objective values (1 per
+frequency/design parameter).
+"""
 
 
 @runtime_checkable
@@ -105,7 +112,7 @@ class OptimizationFunction(Protocol):
             -> objective functions -> frequencies/parameters -> gradient
     """
 
-    def __call__(self, weights: List[WeightsType]) -> SimulationReturn: ...
+    def __call__(self, weights: list[WeightsType]) -> SimulationReturn: ...
 
 
 @runtime_checkable
@@ -146,37 +153,40 @@ class MaskRegion(BaseModel):
     value: float  # value to enforce at positions, should be in [0, 1]
 
 
-def _mean_func(data: list[RawWeightsType]) -> RawWeightsType:
+T = TypeVar("T", bound=np.ndarray)
+
+
+def _mean_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.mean(stacked, axis=0)
 
 
-def _max_func(data: list[RawWeightsType]) -> RawWeightsType:
+def _max_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.max(stacked, axis=0)
 
 
-def _min_func(data: list[RawWeightsType]) -> RawWeightsType:
+def _min_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.min(stacked, axis=0)
 
 
-def _sum_func(data: list[RawWeightsType]) -> RawWeightsType:
+def _sum_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.sum(stacked, axis=0)
 
 
-def _abs_max_func(data: list[RawWeightsType]) -> RawWeightsType:
+def _abs_max_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.max(np.abs(stacked), axis=0)
 
 
-def _abs_min_func(data: list[RawWeightsType]) -> RawWeightsType:
+def _abs_min_func(data: list[T]) -> T:
     stacked = np.stack(data, axis=0)
     return np.min(np.abs(stacked), axis=0)
 
 
-_OPERATION_REGISTRY = {
+_OPERATION_REGISTRY: dict[str, Callable[[list[T]], T]] = {
     "mean": _mean_func,
     "max": _max_func,
     "min": _min_func,
@@ -186,7 +196,28 @@ _OPERATION_REGISTRY = {
 }
 
 
-def combine_gradients(
+def check_operation(operation: "str") -> None:
+    if operation not in _OPERATION_REGISTRY:
+        allowed = list(_OPERATION_REGISTRY.keys())
+        raise ValueError(
+            f"Invalid operation '{operation}' in `combine_gradients`. Choose from: {allowed} "
+        )
+
+
+def combine_objective_values(
+    obj_vals: list[RawWeightsType], operation: str = "mean"
+) -> list[float]:
+    """Combines objective values if there are more than one design parameter."""
+    check_operation(operation)
+
+    if len(obj_vals) == 1:
+        return obj_vals[0].tolist()
+
+    out = _OPERATION_REGISTRY[operation](obj_vals)
+    return out.tolist()
+
+
+def combine_gradients_by_design_region(
     grad_list: list[list[list[RawWeightsType]]],
     operation: str = "mean",
 ) -> list[RawWeightsType]:
@@ -196,16 +227,43 @@ def combine_gradients(
     'mean', for example, averages all of the gradients for that design region. The others
     do something similar.
     """
-    if operation not in _OPERATION_REGISTRY:
-        allowed = list(_OPERATION_REGISTRY.keys())
-        raise ValueError(
-            f"Invalid operation '{operation}' in `combine_gradients`. Choose from: {allowed} "
-        )
+    check_operation(operation)
 
     flattened = []
     for sublist in grad_list:
         temp = _flatten_to_arrays(sublist)
         flattened.append(_OPERATION_REGISTRY[operation](temp))
+
+    return flattened
+
+
+def combine_gradients_by_objective_function(
+    grad_list: list[list[list[RawWeightsType]]],
+    operation: str = "mean",
+) -> list[np.ndarray[tuple[int, int], np.dtype[np.float64]]]:
+    """Function to apply 'simple' transforms to a set of stacked gradients. Returns a list
+    separated by design region and design parameter (e.g. for epigraph optimization).
+    Within each design region, each objective function is collapsed -- this means that
+    each design region will end up with settings.n_design_parameters gradients in a 2D
+    array so that we can do grad[:,1:] = combined_grads.T
+
+    Operations can be: 'mean', 'max', 'abs_min', 'abs_max', 'sum'
+
+    'mean', for example, averages all of the gradients for that design region. The others
+    do something similar.
+
+    Arguments:
+        `list[list[list[RawWeightsType]]]`: backpropagated gradients from simulation
+
+    Returns:
+        `list[np.ndarray[tuple[int,int], np.dtype[np.float64]]`:
+    """
+    check_operation(operation)
+
+    flattened = []
+    for obj_fun in grad_list:
+        stacked = np.stack(obj_fun, axis=0)
+        flattened.append(_OPERATION_REGISTRY[operation]([stacked]))
 
     return flattened
 

@@ -18,22 +18,23 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["NloptOptimizationSettings"]
 
+import logging
+
+import nlopt  # type: ignore
+import numpy as np
+from pydantic import Field, computed_field
+
 from adjoint_helper.core.pydantic_defs import SolverConfig
-from ..core.defs import (
-    WeightsType,
-    RawWeightsType,
-)
+
 from ..core.base_settings import (
-    SimulationSettings,
     OptimizationSettings,
+    SimulationSettings,
+)
+from ..core.defs import (
+    RawWeightsType,
+    WeightsType,
 )
 from ..utils.util import save_fom_history, save_output
-
-import numpy as np
-import nlopt  # type: ignore
-from pydantic import Field, computed_field
-from typing import List
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,8 @@ class NloptOptimizationSettings(OptimizationSettings):
     connectivity_tol: float = 1e-3
     connectivity_min_grad: float = 1e-6  # value at which we tread the gradient as 0
     optimizer: nlopt.opt = Field(exclude=True, repr=False)
-    sigmoid_biases: list[float] = [4, 8, 16, 32, 64, 128]
-    nlopt_params: dict = {}  # Can pass arbitrary settings through this to apply to the solver
+    sigmoid_biases: list[float] = [4, 8, 16, 32, 64, 128]  # noqa: RUF012, pydantic handles this
+    nlopt_params: dict = {}  # Can pass arbitrary settings through this to apply to the solver  # noqa: RUF012, pydantic handles
 
     @computed_field
     @property
@@ -76,14 +77,17 @@ class NloptOptimizationSettings(OptimizationSettings):
         self,
         weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettings,
     ) -> float:
 
-        settings.update_weights(settings.vector_to_arrays(weights))
-        settings.apply_masks()
-        settings.apply_symmetry()
+        self.simulation_settings.update_weights(
+            self.simulation_settings.vector_to_arrays(weights)
+        )
+        self.simulation_settings.apply_masks()
+        self.simulation_settings.apply_symmetry()
 
-        spacing, grad_out = settings.line_width_and_spacing(optimization=self)
+        spacing, grad_out = self.simulation_settings.line_width_and_spacing(
+            optimization=self
+        )
 
         if grad_out.size > 0:
             grad[:] = grad_out
@@ -94,14 +98,17 @@ class NloptOptimizationSettings(OptimizationSettings):
         self,
         weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettings,
     ) -> float:
 
-        settings.update_weights(settings.vector_to_arrays(weights))
-        settings.apply_masks()
-        settings.apply_symmetry()
+        self.simulation_settings.update_weights(
+            self.simulation_settings.vector_to_arrays(weights)
+        )
+        self.simulation_settings.apply_masks()
+        self.simulation_settings.apply_symmetry()
 
-        connectivity, grad_out = settings.connectivity_constraint(optimization=self)
+        connectivity, grad_out = self.simulation_settings.connectivity_constraint(
+            optimization=self
+        )
         if grad_out.size > 0:
             grad[:] = grad_out
 
@@ -123,21 +130,21 @@ class NloptOptimizationSettings(OptimizationSettings):
         Updates gradient in-place
         """
 
-        opt = settings.get_objective(self)
-        f0, vec_out = opt(weights)
+        opt = self.simulation_settings.get_objective(self)
+        [obj], vec_out = opt(weights)
+
         if grad is not None and grad.size > 0:
             grad[:] = vec_out
 
-        obj: float = np.sum(np.real(f0))
         self.obj.append(obj)
-        self.weights.append(settings.vector_to_arrays(weights.copy()))
+        self.weights.append(self.simulation_settings.vector_to_arrays(weights.copy()))
         self.data.append(obj)
-        save_output(settings, self, self.sigmoid_bias)
+        save_output(self, self.sigmoid_bias)
 
         return obj
 
-    def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
-        """_summary_
+    def optimize(self) -> list[WeightsType]:
+        """Runs an nlopt optimization directly (no fancy business)
 
         Args:
             settings (SimulationSettings): Simulation settings for this simulation
@@ -147,13 +154,13 @@ class NloptOptimizationSettings(OptimizationSettings):
             npt.NDArray[np.float64]: Optimal weights after the optimization
         """
 
-        settings.calculate_normalization()
+        self.simulation_settings.calculate_normalization()
 
-        lb = np.zeros(settings.total_n())
-        ub = np.ones(settings.total_n())
-        weights: RawWeightsType = np.concatenate(settings.weights_raw)
+        lb = np.zeros(self.simulation_settings.total_n())
+        ub = np.ones(self.simulation_settings.total_n())
+        weights: RawWeightsType = np.concatenate(self.simulation_settings.weights_raw)
 
-        settings.apply_masks()
+        self.simulation_settings.apply_masks()
 
         # Handle restarting:
         _, last_index = self._current_bias_and_index()
@@ -170,22 +177,18 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             if self.apply_linewidth:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda w, g: self._linewidth_cons(
-                        weights=w, grad=g, settings=settings
-                    ),  # pyright: ignore[reportUnknownArgumentType]
+                    lambda w, g: self._linewidth_cons(weights=w, grad=g),  # pyright: ignore[reportUnknownArgumentType]
                     self.linewidth_tol,
                 )
 
             if self.apply_connectivity:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda w, g: self._connectivity_cons(
-                        weights=w, grad=g, settings=settings
-                    ),  # pyright: ignore[reportUnknownArgumentType]
+                    self._connectivity_cons,
                     self.connectivity_tol,
                 )
 
             solver.set_min_objective(  # type: ignore
-                lambda x, g: self._nlopt_objective_f(x, g, settings)  # pyright: ignore[reportUnknownArgumentType]
+                self._nlopt_objective_f
             )
 
             for k, v in self.nlopt_params:
@@ -193,11 +196,17 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             weights[:] = solver.optimize(weights)
 
-            settings.update_weights(settings.vector_to_arrays(weights))
+            self.simulation_settings.update_weights(
+                self.simulation_settings.vector_to_arrays(weights)
+            )
 
-        optimal_design_weights = settings.filter_and_project(optimization=self)
+        optimal_design_weights = self.simulation_settings.filter_and_project(
+            optimization=self
+        )
 
-        save_output(settings, self, 0, binarize=True)
-        save_fom_history(optimization=self, history_dir=settings.data_dir)
+        save_output(self, 0, binarize=True)
+        save_fom_history(
+            optimization=self, history_dir=self.simulation_settings.data_dir
+        )
 
         return optimal_design_weights

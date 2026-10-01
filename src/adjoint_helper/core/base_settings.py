@@ -17,20 +17,22 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from __future__ import annotations
+
 import logging
+from collections.abc import Generator
 
-
+from adjoint_helper.core.defs import ObjectiveReturn, combine_gradients_by_design_region
 from adjoint_helper.core.pydantic_defs import SolverConfig
 from adjoint_helper.utils.logging_utils import setup_logger
-from adjoint_helper.core.defs import combine_gradients, ObjectiveReturn
 
-__all__ = ["SimulationSettings", "OptimizationSettings"]
+__all__ = ["OptimizationSettings", "SimulationSettings"]
 
 import hashlib
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, List
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -43,7 +45,6 @@ from pydantic import (
     computed_field,
     model_validator,
 )
-from typing_extensions import Self
 
 from ..vendors.meep.connectivity import constraint_connectivity
 from ..vendors.meep.filters import (
@@ -69,192 +70,6 @@ DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 logger = logging.getLogger(__name__)
 
 
-class OptimizationSettings(BaseModel, ABC):
-    """
-    Class to store necessary optimization parameters as well as optimization
-    history.
-
-    Note that the linewidth sigmoid threshold should probably be the last
-    epoch as it can break the gradient if applied too early. Note that this happens
-    by default, so you don't need to do anything about it (unless you want to override
-    this behavior)
-
-    Note that you probably want the connectivity threshold to be about halfway
-    through your optimization (if using)
-    """
-
-    model_config = ConfigDict(
-        extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
-    )
-
-    obj: list[float] = []
-    data: list[float] = []
-    weights: list[list[WeightsType]] = Field(default_factory=list)  # type: ignore
-    grad: list[np.float64] = []
-    connectivity: list[float] = []
-    sigmoid_threshold: float = 0.5
-    sigmoid_erosion: float = 0.65
-    sigmoid_biases: list[float] = DEFAULT_BIASES
-    sigmoid_bias: float = -1
-    sigmoid_bias_threshold: float = 32
-    connectivity_sigmoid_threshold: float = 16
-    _apply_connectivity: bool = False
-    do_connectivity: bool = False
-    linewidth_sigmoid_threshold: float = DEFAULT_BIASES[-1]
-    _apply_linewidth: bool = False
-    max_evals: list[int] = Field(default_factory=list)
-    _use_epsavg: bool = False
-    _use_damping: bool = True
-    maximum_runtime: float = 2000
-    minimum_runtime: float = 0
-    decay_by: float = 1e-10
-    use_smoothed_projection: bool = False
-    minimum_feature_size: float = 0.05
-
-    evals: int | None = Field(default=None, exclude=True, repr=False)
-    optimizer: Any = Field(exclude=True, repr=False)
-
-    @model_validator(mode="before")
-    @classmethod
-    def expand_evals(cls, data: Any) -> Any:
-        """
-        Expands evals if passed as int. Update default below if you update
-        them above.
-        """
-        if isinstance(data, dict):
-            max_evals = data.get("max_evals")  # type: ignore
-            evals = data.pop("evals", None)
-            biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
-
-            target_evals = (
-                evals
-                if evals is not None
-                else (max_evals if isinstance(max_evals, int) else None)
-            )
-            if target_evals is not None:
-                data["max_evals"] = [target_evals] * len(biases)  # type: ignore
-
-        return data  # type: ignore
-
-    @model_validator(mode="before")
-    @classmethod
-    def update_linewidth_threshold(cls, data: Any) -> Any:
-        """Checks if the user explicitly passed in a linewidth threshold value.
-        If they didn't sets it to the last sigmoid_bias supplied."""
-
-        if isinstance(data, dict) and "linewidth_sigmoid_threshold" not in data:
-            biases: list[float] = data.get("sigmoid_biases", DEFAULT_BIASES)
-            data["linewidth_sigmoid_threshold"] = biases[-1]
-
-        return data
-
-    @model_validator(mode="after")
-    def validate_lengths(self) -> OptimizationSettings:
-        if len(self.max_evals) != len(self.sigmoid_biases):
-            raise ValueError(
-                f"Mismatch: max_evals (len {len(self.max_evals)}) "
-                f"must match sigmoid_biases (len {len(self.sigmoid_biases)})"
-            )
-
-        return self
-
-    @computed_field
-    @property
-    def filter_radius(self) -> float:
-        return get_conic_radius_from_eta_e(  # type: ignore
-            self.minimum_feature_size, self.sigmoid_erosion
-        )
-
-    @computed_field
-    @property
-    def sigmoid_dilation(self) -> float:
-        return 1 - self.sigmoid_erosion
-
-    @computed_field
-    @property
-    def total_iterations(self) -> int:
-        return int(np.sum(self.max_evals))
-
-    @computed_field
-    @property
-    @abstractmethod
-    def solver_config(self) -> SolverConfig:
-        pass
-
-    @computed_field
-    @property
-    def class_path(self) -> str:
-        return f"{self.__class__.__module__}.{self.__class__.__name__}"
-
-    @computed_field
-    @property
-    def last_completed_index(self) -> int:
-        return len(self.obj) - 1
-
-    @property
-    def bias(self) -> float:
-        bias, _ = self._current_bias_and_index()
-        return bias
-
-    @property
-    def apply_linewidth(self) -> bool:
-        return (self.bias >= self.linewidth_sigmoid_threshold) or self._apply_linewidth
-
-    @apply_linewidth.setter
-    def apply_linewidth(self, val: bool):
-        self._apply_linewidth = val
-
-    @property
-    def apply_connectivity(self) -> bool:
-        return (
-            (self.bias >= self.connectivity_sigmoid_threshold) and self.do_connectivity
-        ) or self._apply_connectivity
-
-    @apply_connectivity.setter
-    def apply_connectivity(self, val: bool):
-        self._apply_connectivity = val
-
-    @property
-    def use_damping(self) -> bool:
-        return not self.use_epsavg or self._use_damping
-
-    @use_damping.setter
-    def use_damping(self, val: bool):
-        self._use_damping = val
-
-    @property
-    def use_epsavg(self) -> bool:
-        return (self.bias > self.sigmoid_bias_threshold) or self._use_epsavg
-
-    @use_epsavg.setter
-    def use_epsavg(self, val: bool):
-        self._use_epsavg = val
-
-    @abstractmethod
-    def optimize(self, settings: SimulationSettings) -> List[WeightsType]:
-        pass
-
-    def _current_bias_and_index(self) -> tuple[float, int]:
-        if self.last_completed_index < 0:
-            return (self.sigmoid_biases[0], 0)
-
-        # We assume we used all the available iterations at each step --
-        # this might set us back a bit, but it seems like a better assumption
-        # than the alternative
-
-        target = self.last_completed_index
-        current = 0
-        for i, evals in enumerate(self.max_evals):
-            current += evals
-            if target < current:
-                return (self.sigmoid_biases[i], i)
-
-        raise ValueError(
-            f"Optimization tried to restart at iteration {target}, "
-            f"but that is past the total number of iterations ({self.total_iterations})"
-        )
-
-
 class DesignRegion(BaseModel):
     """Class to store information about a single design region and to perform
     operations on it (masking and symmetry). The only mandatory inputs are x_size,
@@ -270,7 +85,7 @@ class DesignRegion(BaseModel):
     resolution: int
     medium_0: Any = None
     medium_1: Any = None
-    connected_sides: List[Edge] = []
+    connected_sides: list[Edge] = []
     weights: WeightsType = np.array([])
     mask: MaskRegion | None = None
     symmetry_func: Callable[[WeightsType], WeightsType] | None = Field(
@@ -296,12 +111,12 @@ class DesignRegion(BaseModel):
     @computed_field
     @property
     def nx_design(self) -> int:
-        return int(round(self.x_size * self.resolution)) + 1
+        return round(self.x_size * self.resolution) + 1
 
     @computed_field
     @property
     def ny_design(self) -> int:
-        return int(round(self.y_size * self.resolution)) + 1
+        return round(self.y_size * self.resolution) + 1
 
     @computed_field
     @property
@@ -597,7 +412,7 @@ class SimulationSettings(BaseModel, ABC):
         1  # How many 'things' are we optimizing for? Typically frequencies
     )
     n_objective_functions: int = 1
-    design_regions: List[DesignRegion]
+    design_regions: list[DesignRegion]
     resolution: int
     baseline_optimization_value: float | list[float] = -np.inf
     needs_baseline: bool = True
@@ -670,6 +485,31 @@ class SimulationSettings(BaseModel, ABC):
     def class_path(self) -> str:
         return f"{self.__class__.__module__}.{self.__class__.__name__}"
 
+    @computed_field(exclude_if=lambda _: True)
+    @property
+    def design_space(self) -> Generator:
+        """Returns an iterator for the whole design space:
+        for design_region_idx, objective_function_idx, parameter_idx, design_region in settings.design_space
+
+        The last element (design_region) is the actual `DesignRegion` that we are
+        working with, as it is needed sometimes.
+        """
+        return self._iterate_design_space()
+
+    @computed_field
+    @property
+    def n_objectives(self) -> int:
+        """Returns the total number of objectives we have --
+        n_objective_functions * n_design_parameters
+        """
+        return self.n_objective_functions * self.n_design_parameters
+
+    def _iterate_design_space(self) -> Generator:
+        for dr_idx, dr in enumerate(self.design_regions):
+            for obj_idx in range(self.n_objective_functions):
+                for param_idx in range(self.n_design_parameters):
+                    yield dr_idx, obj_idx, param_idx, dr
+
     def is_multi_region(self) -> bool:
         return len(self.design_regions) > 1
 
@@ -694,12 +534,12 @@ class SimulationSettings(BaseModel, ABC):
         return [
             [
                 [
-                    np.zeros((r.total_n,), dtype=np.float64)
+                    np.zeros(r.total_n, dtype=np.float64)
                     for _ in range(self.n_design_parameters)
                 ]
                 for _ in range(self.n_objective_functions)
             ]
-            for r in self.design_regions
+            for _, r in enumerate(self.design_regions)
         ]
 
     @abstractmethod
@@ -742,9 +582,8 @@ class SimulationSettings(BaseModel, ABC):
             This function is from adjoint_helper.utils.normalization_functions. If there isn't
             one for your simulation backend, please write one and submit it as a PR.
         """
-        pass
 
-    def update_weights(self, new_weights: List[WeightsType]) -> None:
+    def update_weights(self, new_weights: list[WeightsType]) -> None:
         if len(new_weights) != self.n_design_regions:
             raise ValueError(
                 "Must supply same number of weights as there are design regions."
@@ -753,7 +592,7 @@ class SimulationSettings(BaseModel, ABC):
         for i, r in enumerate(self.design_regions):
             r.weights[:, :] = new_weights[i]
 
-    def vector_to_arrays(self, vec: RawWeightsType) -> List[WeightsType]:
+    def vector_to_arrays(self, vec: RawWeightsType) -> list[WeightsType]:
         """Split the vector into pieces for each design region"""
         ret = []
         start = 0
@@ -783,7 +622,7 @@ class SimulationSettings(BaseModel, ABC):
     def filter_and_project(
         self,
         optimization: OptimizationSettings,
-    ) -> List[WeightsType]:
+    ) -> list[WeightsType]:
         """Filters and projects weights for all design regions.
         Returns the flattened array of weights for all of them."""
 
@@ -835,7 +674,7 @@ class SimulationSettings(BaseModel, ABC):
         for r in self.design_regions:
             r.apply_mask()
 
-    def binarize_weights(self, optimization: OptimizationSettings) -> List[WeightsType]:
+    def binarize_weights(self, optimization: OptimizationSettings) -> list[WeightsType]:
         """Returns a binarized version of the internal weights."""
 
         ret = []
@@ -938,6 +777,194 @@ def get_objective(
     return best_func(settings, optimization)
 
 
+class OptimizationSettings(BaseModel, ABC):
+    """
+    Class to store necessary optimization parameters as well as optimization
+    history.
+
+    Note that the linewidth sigmoid threshold should probably be the last
+    epoch as it can break the gradient if applied too early. Note that this happens
+    by default, so you don't need to do anything about it (unless you want to override
+    this behavior)
+
+    Note that you probably want the connectivity threshold to be about halfway
+    through your optimization (if using)
+    """
+
+    model_config = ConfigDict(
+        extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
+    )
+
+    obj: list[float] = []
+    data: list[float] = []
+    weights: list[list[WeightsType]] = Field(default_factory=list)  # type: ignore
+    grad: list[np.float64] = []
+    connectivity: list[float] = []
+    sigmoid_threshold: float = 0.5
+    sigmoid_erosion: float = 0.65
+    sigmoid_biases: list[float] = DEFAULT_BIASES
+    sigmoid_bias: float = -1
+    sigmoid_bias_threshold: float = 32
+    connectivity_sigmoid_threshold: float = 16
+    _apply_connectivity: bool = False
+    do_connectivity: bool = False
+    linewidth_sigmoid_threshold: float = DEFAULT_BIASES[-1]
+    _apply_linewidth: bool = False
+    max_evals: list[int] = Field(default_factory=list)
+    _use_epsavg: bool = False
+    _use_damping: bool = True
+    maximum_runtime: float = 2000
+    minimum_runtime: float = 0
+    decay_by: float = 1e-10
+    use_smoothed_projection: bool = False
+    minimum_feature_size: float = 0.05
+
+    evals: int | None = Field(default=None, exclude=True, repr=False)
+    optimizer: Any = Field(exclude=True, repr=False)
+
+    simulation_settings: SimulationSettings
+
+    @model_validator(mode="before")
+    @classmethod
+    def expand_evals(cls, data: Any) -> Any:
+        """
+        Expands evals if passed as int. Update default below if you update
+        them above.
+        """
+        if isinstance(data, dict):
+            max_evals = data.get("max_evals")  # type: ignore
+            evals = data.pop("evals", None)
+            biases = data.get("sigmoid_biases", DEFAULT_BIASES)  # type: ignore
+
+            target_evals = (
+                evals
+                if evals is not None
+                else (max_evals if isinstance(max_evals, int) else None)
+            )
+            if target_evals is not None:
+                data["max_evals"] = [target_evals] * len(biases)  # type: ignore
+
+        return data  # type: ignore
+
+    @model_validator(mode="before")
+    @classmethod
+    def update_linewidth_threshold(cls, data: Any) -> Any:
+        """Checks if the user explicitly passed in a linewidth threshold value.
+        If they didn't sets it to the last sigmoid_bias supplied."""
+
+        if isinstance(data, dict) and "linewidth_sigmoid_threshold" not in data:
+            biases: list[float] = data.get("sigmoid_biases", DEFAULT_BIASES)
+            data["linewidth_sigmoid_threshold"] = biases[-1]
+
+        return data
+
+    @model_validator(mode="after")
+    def validate_lengths(self) -> OptimizationSettings:
+        if len(self.max_evals) != len(self.sigmoid_biases):
+            raise ValueError(
+                f"Mismatch: max_evals (len {len(self.max_evals)}) "
+                f"must match sigmoid_biases (len {len(self.sigmoid_biases)})"
+            )
+
+        return self
+
+    @computed_field
+    @property
+    def filter_radius(self) -> float:
+        return get_conic_radius_from_eta_e(  # type: ignore
+            self.minimum_feature_size, self.sigmoid_erosion
+        )
+
+    @computed_field
+    @property
+    def sigmoid_dilation(self) -> float:
+        return 1 - self.sigmoid_erosion
+
+    @computed_field
+    @property
+    def total_iterations(self) -> int:
+        return int(np.sum(self.max_evals))
+
+    @computed_field
+    @property
+    @abstractmethod
+    def solver_config(self) -> SolverConfig:
+        pass
+
+    @computed_field
+    @property
+    def class_path(self) -> str:
+        return f"{self.__class__.__module__}.{self.__class__.__name__}"
+
+    @computed_field
+    @property
+    def last_completed_index(self) -> int:
+        return len(self.obj) - 1
+
+    @property
+    def bias(self) -> float:
+        bias, _ = self._current_bias_and_index()
+        return bias
+
+    @property
+    def apply_linewidth(self) -> bool:
+        return (self.bias >= self.linewidth_sigmoid_threshold) or self._apply_linewidth
+
+    @apply_linewidth.setter
+    def apply_linewidth(self, val: bool):
+        self._apply_linewidth = val
+
+    @property
+    def apply_connectivity(self) -> bool:
+        return (
+            (self.bias >= self.connectivity_sigmoid_threshold) and self.do_connectivity
+        ) or self._apply_connectivity
+
+    @apply_connectivity.setter
+    def apply_connectivity(self, val: bool):
+        self._apply_connectivity = val
+
+    @property
+    def use_damping(self) -> bool:
+        return not self.use_epsavg or self._use_damping
+
+    @use_damping.setter
+    def use_damping(self, val: bool):
+        self._use_damping = val
+
+    @property
+    def use_epsavg(self) -> bool:
+        return (self.bias > self.sigmoid_bias_threshold) or self._use_epsavg
+
+    @use_epsavg.setter
+    def use_epsavg(self, val: bool):
+        self._use_epsavg = val
+
+    @abstractmethod
+    def optimize(self) -> list[WeightsType]:
+        pass
+
+    def _current_bias_and_index(self) -> tuple[float, int]:
+        if self.last_completed_index < 0:
+            return (self.sigmoid_biases[0], 0)
+
+        # We assume we used all the available iterations at each step --
+        # this might set us back a bit, but it seems like a better assumption
+        # than the alternative
+
+        target = self.last_completed_index
+        current = 0
+        for i, evals in enumerate(self.max_evals):
+            current += evals
+            if target < current:
+                return (self.sigmoid_biases[i], i)
+
+        raise ValueError(
+            f"Optimization tried to restart at iteration {target}, "
+            f"but that is past the total number of iterations ({self.total_iterations})"
+        )
+
+
 @register_objective(SimulationSettings, OptimizationSettings)
 def _(
     settings: SimulationSettings, optimization: OptimizationSettings
@@ -953,7 +980,8 @@ def _(
         """Default objective function used for `nlopt` optimizations. For simple
         (single-objective) optimizations, this is sufficient as-is. For
         more complicated objectives, you might need to customize it for your
-        needs. Weights should not be updated in-place in this function.
+        needs. Weights should not be updated in-place in this function. Objective
+        values will be summed if there is more than one.
 
         Args:
             weights (RawWeightsType): Concatenated design weights for every design region
@@ -967,21 +995,14 @@ def _(
 
         opt = settings.create_opt(optimization)
 
-        obj_val, grads = opt(settings.filter_and_project(optimization=optimization))
+        obj_val, dJ_du = opt(settings.filter_and_project(optimization=optimization))
 
-        # grad_out = np.zeros((settings.total_n(),), dtype=np.float64)
-        grad_out = np.zeros_like(grads, dtype=np.float64)
         temp_grads = settings.get_empty_grads()
-        # temp_grads = np.zeros_like(grads, dtype=np.float64)
 
-        for dr_i, r in enumerate(settings.design_regions):
-            for obj_func in range(settings.n_objective_functions):
-                for param in range(settings.n_design_parameters):
-                    r.backpropagate(
-                        grads[dr_i][obj_func][param], optimization=optimization
-                    )
-                    temp_grads[dr_i][obj_func][param][:] = grads[dr_i][obj_func][param]
-        grad_out = combine_gradients(temp_grads, operation="sum")
+        for dr_i, obj_func, param, r in settings.design_space:
+            r.backpropagate(dJ_du[dr_i][obj_func][param], optimization=optimization)
+            temp_grads[dr_i][obj_func][param][:] = dJ_du[dr_i][obj_func][param]
+        grad_out = combine_gradients_by_design_region(temp_grads, operation="sum")
         vec_out = np.concatenate(grad_out)
 
         logger.info(
@@ -990,6 +1011,8 @@ def _(
             f"obj. value: {obj_val}"
         )
 
-        return obj_val, vec_out
+        obj_val = np.sum(obj_val)
+
+        return [obj_val], vec_out
 
     return get_default_objective

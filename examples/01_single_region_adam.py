@@ -21,8 +21,11 @@ This file contains a demonstration of a simple single-region single-objective
 optimization. The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
+import numpy as np
+from single_region_meep_example_settings import SingleRegionExampleSettings
+
+import adjoint_helper as ah
 from adjoint_helper.optimizers.optax_optimization import OptaxOptimizationSettings
-from single_region_example_settings import SingleRegionExampleSettings
 
 # all units in um
 
@@ -40,7 +43,17 @@ wgHeight = 0.3
 designX = 5
 designY = designX
 
+design_region = ah.DesignRegion(
+    x_size=designX,
+    y_size=designY,
+    resolution=resolution * 2,
+    # the layout in numpy is transposed from what we actually want,
+    # so to enforce +y/-y symmetry we do a fliplr
+    symmetry_func=lambda w: w / 2 + np.fliplr(w / 2),
+)
+
 settings = SingleRegionExampleSettings(
+    design_regions=[design_region],
     wavelength=wavelength,
     resolution=resolution,
     matInd=matInd,
@@ -49,19 +62,19 @@ settings = SingleRegionExampleSettings(
     beamSize=beamSize,
     wgWidth=wgWidth,
     wgHeight=wgHeight,
-    designX=designX,
-    designY=designY,
-    history_fname="Single_Region_Adam.out",
+    history_fname="Single_Region_Nlopt.out",
     enforce_symmetry=True,
 )
+
 
 """
 The defaults for Optax optimizations use the Adam optimizer and for simple
 designs likely need little adjustment. 
 """
 adam_optimization = OptaxOptimizationSettings(
+    simulation_settings=settings,
     minimum_feature_size=minimum_feature,
     total_evals=5,  # very few, as demonstration.
 )
 
-adam_optimization.optimize(settings=settings)
+adam_optimization.optimize()

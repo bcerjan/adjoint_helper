@@ -21,12 +21,14 @@ This file contains a demonstration of a simple single-region single-objective
 optimization. The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
-from single_region_example_settings import SingleRegionExampleSettings
+import nlopt  # type: ignore
+import numpy as np
+from single_region_meep_example_settings import SingleRegionExampleSettings
+
+import adjoint_helper as ah
 
 # Optimizers must be imported individually,
 from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettings
-import nlopt  # type: ignore
-
 
 # all units in um
 
@@ -44,7 +46,18 @@ wgHeight = 0.3
 designX = 5
 designY = designX
 
+
+design_region = ah.DesignRegion(
+    x_size=designX,
+    y_size=designY,
+    resolution=resolution * 2,
+    # the layout in numpy is transposed from what we actually want,
+    # so to enforce +y/-y symmetry we do a fliplr
+    symmetry_func=lambda w: w / 2 + np.fliplr(w / 2),
+)
+
 settings = SingleRegionExampleSettings(
+    design_regions=[design_region],
     wavelength=wavelength,
     resolution=resolution,
     matInd=matInd,
@@ -53,8 +66,6 @@ settings = SingleRegionExampleSettings(
     beamSize=beamSize,
     wgWidth=wgWidth,
     wgHeight=wgHeight,
-    designX=designX,
-    designY=designY,
     history_fname="Single_Region_Nlopt.out",
     enforce_symmetry=True,
 )
@@ -68,11 +79,14 @@ when it is created:
 solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n())  # type: ignore
 
 nlopt_optimization = NloptOptimizationSettings(
+    simulation_settings=settings,
     optimizer=solver,
     minimum_feature_size=minimum_feature,
-    # If you pass an int (instead of a list[int]) it expands to use that many evaluations
-    # for each sigmoid_bias
-    max_evals=2,  # very few, as demonstration.
+    evals=2,  # very few, as demonstration.
 )
 
-nlopt_optimization.optimize(settings=settings)
+# Because our mask depends on the simulation setup and optimization setup,
+# we have to define it after we have our settings in place.
+settings.design_regions[0].mask = settings.get_masks(nlopt_optimization.filter_radius)
+
+nlopt_optimization.optimize()

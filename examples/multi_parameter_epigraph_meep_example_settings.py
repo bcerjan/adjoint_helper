@@ -13,36 +13,37 @@ from adjoint_helper.utils.normalization_functions import (
 )
 
 """
-Example of a settings class with multiple design regions.
-This example optimizes a pair of spaced design regions to focus light of a single
-frequency at a design distance. The input is a planewave with linear polarization.
+Example of a settings class with multiple objectives to be simultaneously
+optimized using a minimax objective via the epigraph formulation.
 
-It is set up such that you could add more design regions and it would adjust if 
-you so desired.
 
-A recreation of: https://nbviewer.jupyter.org/github/NanoComp/meep/blob/master/python/examples/adjoint_optimization/05-Near2Far.ipynb
-but with a second design region (to demonstrate how that would work)
+A recreation of: https://nbviewer.org/github/NanoComp/meep/blob/master/python/examples/adjoint_optimization/06-Near2Far-Epigraph.ipynb
 """
 
 
-class MultiRegionExampleSettings(ah.SimulationSettings):
+class MultiParameterExampleSettings(ah.SimulationSettings):
     """These are parameters that are unique to your simulation and can be re-used
     for different variations (new substrate / materials / whatever)
     """
 
-    design_region_spacing: float
     design_region_ind: float
-    gap_ind: float
-    sub_ind: float
     focal_distance: float
-    wavelength: float
+    wavelengths: list[float]
     resolution: int
 
-    def _get_pading(self) -> float:
-        return self.wavelength * 3
+    @property
+    def max_wavelength(self) -> float:
+        return np.max(self.wavelengths)
+
+    @property
+    def frequencies(self) -> list[float]:
+        return [1 / w for w in self.wavelengths]
+
+    def _get_padding(self) -> float:
+        return self.max_wavelength * 2
 
     def _get_pml(self) -> float:
-        return 1.0
+        return 1.0 if self.max_wavelength < 2 else self.max_wavelength / 2
 
     def get_max_design_width(self) -> float:
         max = -1
@@ -50,41 +51,6 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
             if max < d.x_size:
                 max = d.x_size
         return max
-
-    def get_total_design_height(self) -> float:
-        design_y = np.sum([d.y_size for d in self.design_regions[:-1]])
-        return design_y + self.design_region_spacing * (self.n_design_regions - 1)
-
-    def create_geometry(self) -> list[mp.GeometricObject]:
-        """
-        Function to create overall geometry without the design regions.
-        """
-
-        padding = self._get_pading()
-        pmlLen = self._get_pml()
-
-        cell = mp.Vector3(
-            2 * pmlLen + self.get_max_design_width(),
-            2 * pmlLen + self.get_total_design_height() + 2 * padding,
-        )
-
-        subMed = mp.Medium(index=self.sub_ind)
-
-        h = pmlLen + padding + self.get_total_design_height()
-
-        return [
-            # Chunk of substrate that fills the lower space up to the bottom of
-            # the second design region. The design regions will overwrite this:
-            mp.Block(
-                size=mp.Vector3(cell.x, h, 0),
-                center=mp.Vector3(
-                    0,
-                    -cell.y / 2 + h / 2,
-                    0,
-                ),
-                material=subMed,
-            ),
-        ]
 
     def normalization(self) -> float | list[float]:
         # No normalization needed for this objective
@@ -104,12 +70,12 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
 
         """
 
-        padding = self._get_pading()
+        padding = self._get_padding()
         pmlLen = self._get_pml()
 
         cell = mp.Vector3(
             2 * pmlLen + self.get_max_design_width(),
-            2 * pmlLen + self.get_total_design_height() + 2 * padding,
+            2 * pmlLen + 2 * padding,
         )
 
         symmetries: list[mp.Symmetry] = []
@@ -119,66 +85,67 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
 
         pmlLayers = [mp.PML(thickness=pmlLen)]
 
-        freq = 1 / self.wavelength
+        freqs = self.frequencies
 
-        df = 0.1
+        median_f = np.mean(freqs)
+        max_f = np.max(freqs)
+        min_f = np.min(freqs)
+        df = max_f - min_f
 
-        src = mp.Vector3(self.get_max_design_width(), 0)
+        src_size = mp.Vector3(self.get_max_design_width(), 0)
 
-        srcPos = mp.Vector3(0, -cell.y / 2 + pmlLen + padding / 2)
+        srcPos = mp.Vector3(
+            0, -cell.y / 2 + pmlLen + padding / 2 - self.max_wavelength / 2
+        )
 
         measurePos = mp.Vector3(
             0,
-            cell.y / 2 - pmlLen - padding / 4,
+            cell.y / 2 - pmlLen - padding / 2 + self.max_wavelength / 2,
         )
 
         sources: list[mp.Source] = [
             mp.Source(
-                src=mp.GaussianSource(freq, fwidth=df),
+                src=mp.GaussianSource(frequency=median_f, fwidth=df),
                 component=mp.Ez,  # type: ignore
                 center=srcPos,
-                size=src,
+                size=src_size,
             )
         ]
 
         matMed = mp.Medium(index=self.design_region_ind)
-        backMed = mp.Medium(index=self.sub_ind)
 
         matgrid_regions: list[mpa.DesignRegion] = []
 
-        geometry = self.create_geometry()
-        total_height = -cell.y / 2 + pmlLen + padding
-        for dr in self.design_regions:
-            matGrid = mp.MaterialGrid(
-                mp.Vector3(dr.nx_design, dr.ny_design),
-                backMed,
-                matMed,
-                weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
-                beta=0,
-                do_averaging=optimization.use_epsavg,
-                damping=optimization.use_damping,
-                grid_type="U_MEAN",
-            )
+        geometry = []
+        dr = self.design_regions[0]
+        matGrid = mp.MaterialGrid(
+            mp.Vector3(dr.nx_design, dr.ny_design),
+            mp.air,
+            matMed,
+            weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
+            beta=0,
+            do_averaging=optimization.use_epsavg,
+            damping=optimization.use_damping,
+            grid_type="U_MEAN",
+        )
 
-            matGridRegion = mpa.DesignRegion(
-                matGrid,  # type: ignore
-                volume=mp.Volume(
-                    center=mp.Vector3(0, total_height + dr.y_size / 2),
-                    size=mp.Vector3(dr.x_size, dr.y_size),
-                ),
-            )
+        matGridRegion = mpa.DesignRegion(
+            matGrid,  # type: ignore
+            volume=mp.Volume(
+                center=mp.Vector3(0, 0),
+                size=mp.Vector3(dr.x_size, dr.y_size),
+            ),
+        )
 
-            matgrid_regions.append(matGridRegion)
+        matgrid_regions.append(matGridRegion)
 
-            total_height += dr.y_size + self.design_region_spacing
-
-            geometry.append(
-                mp.Block(
-                    center=matGridRegion.center,
-                    size=matGridRegion.size,
-                    material=matGrid,
-                ),
-            )
+        geometry.append(
+            mp.Block(
+                center=matGridRegion.center,
+                size=matGridRegion.size,
+                material=matGrid,
+            ),
+        )
 
         sim = mp.Simulation(
             resolution=self.resolution,
@@ -189,8 +156,6 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
             boundary_layers=pmlLayers,
             symmetries=symmetries,
         )
-
-        # We want to maximize the power going in to this mode:
 
         near_2_far_regions = [
             mp.Near2FarRegion(
@@ -210,14 +175,14 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
 
         # We negate to make this a minimization objective
         def J(far_field: List[List[complex]]) -> float:
-            return -npa.abs(far_field[0, :, 2] ** 2)  # type: ignore
+            return -(npa.abs(far_field[0, :, 2]) ** 2)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,
             objective_functions=[J],
             objective_arguments=obList,
             design_regions=matgrid_regions,
-            frequencies=[freq],
+            frequencies=freqs,
             decay_by=optimization.decay_by,
             maximum_run_time=optimization.maximum_runtime,
         )
@@ -228,11 +193,6 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
         self, optimization: ah.OptimizationSettings
     ) -> ah.OptimizationFunction:
 
-        # In this case, we need to wrap weights (a 1D numpy array) into a list
-        # for an mpa.OptimizationProblem. The return type of the objective is expected
-        # to be: tuple(list[float], numpy_array) where the list is the objective
-        # value(s) and the numpy array is the gradients flattened into one large
-        # array.
         opt = self.create_sim(optimization)
 
         def obj(
@@ -245,11 +205,13 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
 
             val, grad = opt(m_weights)  # type: ignore
 
+            print(np.array(grad).shape)
             # For common backends, there should be a similar utility function
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
             val, grad = normalize_meep_output((val, grad))
+            print(np.array(grad).shape)
 
             return (val, grad)
 

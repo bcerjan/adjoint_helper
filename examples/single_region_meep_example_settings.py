@@ -106,7 +106,6 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         return ah.MaskRegion(locations=border_mask, value=1)  # type: ignore
 
     def normalization(self) -> float | list[float]:
-
         padding = 2 * self.wavelength
         pmlLen = 2 * self.wavelength
 
@@ -318,17 +317,21 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         opt = self.create_sim(optimization=optimization)
 
-        # In this case, we need to wrap weights (a 1D numpy array) into a list
-        # for an mpa.OptimizationProblem. The return type of the objective is expected
-        # to be: tuple(list[float], numpy_array) where the list is the objective
-        # value(s) and the numpy array is the gradients flattened into one large
-        # array.
         def obj(
             weights: list[np.ndarray[tuple[int, int], np.dtype[np.float64]]],
         ) -> ah.SimulationReturn:
+            # Meep's opt wants 1D vectors of weights, but we receive a 2D array
+            # from the optimization backend (always)
             m_weights = normalize_meep_weights(weights)
+
             val, grad = opt(m_weights)  # type: ignore
 
-            return normalize_meep_output((val, grad))
+            # For common backends, there should be a similar utility function
+            # to automatically normalize the output into the correct shape
+            # for the rest of the library. If there isn't one for your backend,
+            # feel free to write one and submit it as a PR.
+            val, grad = normalize_meep_output((val, grad))
+
+            return (val, grad)
 
         return obj

@@ -18,22 +18,23 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["OptaxOptimizationSettings"]
 
-from adjoint_helper.core.pydantic_defs import SolverConfig
-from ..core.defs import (
-    ObjectiveReturn,
-    WeightsType,
-    RawWeightsType,
-)
-from ..core.base_settings import (
-    SimulationSettings,
-    OptimizationSettings,
-)
-from ..utils.util import save_fom_history, save_output
+from typing import Annotated, Any
 
 import numpy as np
 import optax  # type: ignore
 from pydantic import Field, model_validator
-from typing import Any, Annotated
+
+from adjoint_helper.core.pydantic_defs import SolverConfig
+
+from ..core.base_settings import (
+    OptimizationSettings,
+)
+from ..core.defs import (
+    ObjectiveReturn,
+    RawWeightsType,
+    WeightsType,
+)
+from ..utils.util import save_fom_history, save_output
 
 
 class OptaxOptimizationSettings(OptimizationSettings):
@@ -81,15 +82,15 @@ class OptaxOptimizationSettings(OptimizationSettings):
     def solver_config(self) -> SolverConfig:
         return super().solver_config
 
-    def _optax_f(
-        self, settings: SimulationSettings, weights: RawWeightsType
-    ) -> ObjectiveReturn:
+    def _optax_f(self, weights: RawWeightsType) -> ObjectiveReturn:
 
-        opt = settings.get_objective(self)
-        obj_val, grad = opt(weights)
-        obj = np.sum(np.real(obj_val))
+        opt = self.simulation_settings.get_objective(self)
+        [obj], grad = opt(weights)
+
         if self.apply_connectivity:
-            connectivity, g = settings.connectivity_constraint(optimization=self)
+            connectivity, g = self.simulation_settings.connectivity_constraint(
+                optimization=self
+            )
 
             if connectivity > 0:
                 grad[:] = grad[:] + g[:] * self.connectivity_penalty
@@ -97,33 +98,33 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
         if self.apply_linewidth:
             fabrication: float
-            fabrication, g = settings.line_width_and_spacing(optimization=self)
+            fabrication, g = self.simulation_settings.line_width_and_spacing(
+                optimization=self
+            )
 
             if fabrication > 0:
                 grad[:] = grad[:] + g[:] * self.linewidth_penalty
                 obj += fabrication * self.linewidth_penalty
 
         self.obj.append(obj)
-        self.weights.append(settings.vector_to_arrays(weights))
+        self.weights.append(self.simulation_settings.vector_to_arrays(weights))
         self.data.append(obj)
-        save_output(
-            settings=settings, optimization=self, sigmoid_bias=self.sigmoid_bias
-        )
+        save_output(optimization=self, sigmoid_bias=self.sigmoid_bias)
 
-        return obj, grad
+        return [obj], grad
 
-    def optimize(self, settings: SimulationSettings) -> list[WeightsType]:
+    def optimize(self) -> list[WeightsType]:
         """
         Runs the optimization and stores results. Returns the (projected) optimal
         weights for external stuff if desired
         """
 
-        settings.calculate_normalization()
+        self.simulation_settings.calculate_normalization()
 
         # Initial design weights (arbitrary constant value).
-        weights: RawWeightsType = np.concatenate(settings.weights_raw)
+        weights: RawWeightsType = np.concatenate(self.simulation_settings.weights_raw)
 
-        settings.apply_masks()
+        self.simulation_settings.apply_masks()
 
         optimal_design_weights = np.zeros_like(weights)
 
@@ -141,7 +142,6 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
             for _ in range(max_eval):
                 _, grad = self._optax_f(
-                    settings=settings,
                     weights=weights,
                 )
 
@@ -149,13 +149,17 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
                 weights[:] = optax.apply_updates(weights, updates)  # type: ignore
 
-                settings.apply_masks()
-                settings.apply_symmetry()
+                self.simulation_settings.apply_masks()
+                self.simulation_settings.apply_symmetry()
                 weights[:] = np.clip(weights, 0.0, 1.0)
 
-        optimal_design_weights = settings.filter_and_project(optimization=self)
+        optimal_design_weights = self.simulation_settings.filter_and_project(
+            optimization=self
+        )
 
-        save_output(settings, self, 0, binarize=True)
-        save_fom_history(optimization=self, history_dir=settings.data_dir)
+        save_output(self, 0, binarize=True)
+        save_fom_history(
+            optimization=self, history_dir=self.simulation_settings.data_dir
+        )
 
         return optimal_design_weights

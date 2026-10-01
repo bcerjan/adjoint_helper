@@ -16,16 +16,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
-from ..core.base_settings import OptimizationSettings, SimulationSettings
+
+import matplotlib.pyplot as plt
+
+from ..core.base_settings import OptimizationSettings
 from ..core.optimization_history import OptimizationHistory
 from .logging_utils import am_mpi_master
 
 
 def save_output(
-    settings: SimulationSettings,
     optimization: OptimizationSettings,
     sigmoid_bias: float,
     binarize: bool = False,
@@ -47,13 +47,15 @@ def save_output(
     """
     # Save the unmapped weights and a bitmap image of the design weights
 
-    settings.apply_masks()
-    settings.apply_symmetry()
+    optimization.simulation_settings.apply_masks()
+    optimization.simulation_settings.apply_symmetry()
     s_weights = []
     if binarize:
-        s_weights = settings.binarize_weights(optimization)
+        s_weights = optimization.simulation_settings.binarize_weights(optimization)
     else:
-        s_weights = settings.filter_and_project(optimization=optimization)
+        s_weights = optimization.simulation_settings.filter_and_project(
+            optimization=optimization
+        )
 
     # TODO: Should figure output be moved into the DesignRegion also?
     # Probably?
@@ -68,9 +70,9 @@ def save_output(
             )
             ax.set_axis_off()
 
-            settings.data_dir.mkdir(parents=True, exist_ok=True)
+            optimization.simulation_settings.data_dir.mkdir(parents=True, exist_ok=True)
             fig.savefig(  # type: ignore
-                settings.data_dir
+                optimization.simulation_settings.data_dir
                 / f"optimal_design_beta{sigmoid_bias if not binarize else 'inf'}_region{i}.png",
                 dpi=150,
                 bbox_inches="tight",
@@ -78,9 +80,11 @@ def save_output(
             plt.close(fig)
 
         # Save the final (unmapped) design as a 2D array in CSV format
-        settings.output_csv_all(optimization=optimization, binarize=binarize)
+        optimization.simulation_settings.output_csv_all(
+            optimization=optimization, binarize=binarize
+        )
 
-        hist = OptimizationHistory(settings=settings, optimization=optimization)
+        hist = OptimizationHistory(optimization=optimization)
         hist.save_to_json()
 
 

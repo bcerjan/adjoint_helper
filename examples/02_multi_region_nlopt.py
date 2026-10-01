@@ -7,7 +7,7 @@ it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 
-This program is distributed in the hope that it will be useful,
+# This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
@@ -17,55 +17,93 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 """
-This file contains a demonstration of a simple single-region single-objective
-optimization. The settings (the only hard part) are defined separately so they
+Example of setting up an optimization with multiple design regions.
+The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
-import adjoint_helper as ah
-from single_region_example_settings import SingleRegionExampleSettings
+import autograd.numpy as npa
+import nlopt
+from multi_region_meep_example_settings import MultiRegionExampleSettings
 
-import nlopt  # type: ignore
+from adjoint_helper import DesignRegion, OptimizationHistory
+from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettings
 
 # all units in um
-
-wavelength = 0.600
-resolution = 20
-subInd = 1.47  # SiO2
-matInd = 2.01  # SiN
+wavelength = 1.600
+resolution = 30
+subInd = 1.0  # Air
+matInd = 3.4  # Si
 bgInd = 1  # air
-beamSize = 1
+focal_distance = 15
 
-minimum_feature = 0.08
-wgWidth = 0.5
-wgHeight = 0.3
 
-designX = 5
-designY = designX
+minimum_feature = 0.09
 
-settings = SingleRegionExampleSettings(
+designX = 15
+designY = 2.0
+n_regions = 2
+design_region_gap = 2
+
+design_regions = []
+# The sizes do not need to be the same for each region, but for simplicity
+# they will be kept as such.
+for _ in range(n_regions):
+    design_regions.append(
+        DesignRegion(
+            x_size=designX,
+            y_size=designY,
+            resolution=resolution * 1,
+            # Enforces horizontal symmetry -- we flipud due to the
+            # ordering of the weights in numpy
+            # We also need to use the npa version (instead of np)
+            # as we backpropagate through this function
+            symmetry_func=lambda w: w / 2 + npa.flipud(w / 2),
+        )
+    )
+
+settings = MultiRegionExampleSettings(
+    design_regions=design_regions,
     wavelength=wavelength,
     resolution=resolution,
-    matInd=matInd,
-    subInd=subInd,
-    bgInd=bgInd,
-    beamSize=beamSize,
-    wgWidth=wgWidth,
-    wgHeight=wgHeight,
-    designX=designX,
-    designY=designY,
+    design_region_ind=matInd,
+    history_fname="Multi_Region_Nlopt.out",
+    enforce_symmetry=True,
+    design_region_spacing=design_region_gap,
+    gap_ind=subInd,
+    sub_ind=subInd,
+    focal_distance=focal_distance,
+    data_dir="./output/three_region",
 )
 
-"""
-For nlopt, you are required to supply a solver selection due to how that libray
-handles configuration. Specfically, the solver needs to know the number of parameters
-when it is created:
-"""
-solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n())  # type: ignore
-
-nlopt_optimization = ah.NloptOptimizationSettings(
+solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n())
+nlopt_optimization = NloptOptimizationSettings(
+    simulation_settings=settings,
+    sigmoid_erosion=0.55,
     optimizer=solver,
-    minimum_size=minimum_feature,
-    max_evals=2,  # very few, as demonstration
+    minimum_feature_size=minimum_feature,  # "evals" assigns that number of evaluations to every bias
+    # to speficify individually, use max_evals = [5, 10, 25, 5]
+    evals=3,  # very few, as demonstration
+    maximum_runtime=2000,
+    sigmoid_biases=[4, 8, 16, 32, 64, 128],
 )
+# If history exists at the correct location (either via fpath argument or
+# data_dir / history_fname in the settings) it will be loaded. If you want
+# to change any of your OptimizationSettings before restarting the simulation,
+# you must do that manually afterwards via history.optimization.setting = XXXX.
+#
+# If no history exists, it will be created based on the provided default_optimization
+#
+# Other options are `OptimizationHistory.load_if_exists()` and
+# `OptimizationHistory.load_from_json()`,
+# history = OptimizationHistory.load_or_create(
+#     settings=settings, default_optimization=nlopt_optimization
+# )
+history = OptimizationHistory(optimization=nlopt_optimization)
 
-nlopt_optimization.optimize(settings=settings)
+# If we loaded the history, we need to re-set the symmetry functions
+# as they are not stored (so technically I didn't need to write them above)
+for dr in history.settings.design_regions:
+    dr.symmetry_func = lambda w: w / 2 + npa.flipud(w / 2)
+
+# `optimize` both starts and restarts the process
+history.optimize()

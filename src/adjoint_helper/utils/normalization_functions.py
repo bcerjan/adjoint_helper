@@ -1,12 +1,16 @@
 import numpy as np
-from adjoint_helper import SimulationReturn
-from adjoint_helper.core.defs import WeightsType, RawWeightsType
 
+from adjoint_helper import SimulationReturn
+from adjoint_helper.core.defs import (
+    RawWeightsType,
+    WeightsType,
+    combine_objective_values,
+)
 
 type Array2D = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 type Array1D = np.ndarray[tuple[int], np.dtype[np.float64]]
-type meep_obj_val_return = float | list[float] | list[Array1D]
-type meep_grad_return = (
+type MeepObjValReturn = float | list[float] | list[Array1D]
+type MeepGradReturn = (
     list[list[Array2D]]
     | list[list[Array1D]]
     | list[Array2D]
@@ -14,7 +18,9 @@ type meep_grad_return = (
     | Array2D
     | Array1D
 )
-type meep_opt_return = tuple[meep_obj_val_return, meep_grad_return]
+type MeepOptReturn = tuple[MeepObjValReturn, MeepGradReturn]
+
+objective_combination_vals = {" "}
 
 
 def normalize_meep_weights(weights: list[WeightsType]) -> list[RawWeightsType]:
@@ -26,32 +32,26 @@ def normalize_meep_weights(weights: list[WeightsType]) -> list[RawWeightsType]:
     return m_weights
 
 
-def normalize_meep_output(opt_out: meep_opt_return) -> SimulationReturn:
+def normalize_meep_output(
+    opt_out: MeepOptReturn, operation: str = "mean"
+) -> SimulationReturn:
     """Function to re-nest output from meep and re-organize it they way
     adjoint_helper expects. Meep tries to help by auto-squeezing results, but
     this breaks the internal handling of the return by adjoint_helper so we
     have to unsqueeze everything. We also need to re-order the results, as
     meep returns them as objective function -> design_region -> parameter/frequency
-    (as a 2D array if there are more than one)"""
+    (as a 2D array if there are more than one)
+
+    Also will combine the objective values (if there is more than one parameter)
+    using the combination method passed in. See `_OPERATION_REGISTRY` for the options.
+    """
 
     obj_val = opt_out[0]
     obj_grad = opt_out[1]
-    if isinstance(obj_val, np.ndarray):
-        obj_val = obj_val.tolist()
-    if not isinstance(obj_val, list):
-        obj_val = [float(obj_val)]
-
-    def separate_freqs(item):
-        if isinstance(item, np.ndarray):
-            if item.ndim == 2:
-                return [col for col in item]
-            elif item.ndim == 1:
-                return [item]
-            raise ValueError(f"Unsupported array dimension: {item.ndim}")
-
-        return [separate_freqs(sub_item) for sub_item in item]
-
-    normalized_grad = separate_freqs(obj_grad)
+    if isinstance(obj_val, list) and isinstance(obj_val[0], np.ndarray):
+        obj_val = combine_objective_values(obj_val, operation)  # type: ignore
+    if isinstance(obj_val, float):
+        obj_val = [obj_val]
 
     def get_list_depth(lst):
         if isinstance(lst, np.ndarray):
@@ -60,16 +60,16 @@ def normalize_meep_output(opt_out: meep_opt_return) -> SimulationReturn:
             return 1 + get_list_depth(lst[0])
         return 1
 
-    current_depth = get_list_depth(normalized_grad)
+    current_depth = get_list_depth(obj_grad)
     if current_depth >= 4:
-        raise ValueError("too much nesting in correct_opt_output")
+        raise ValueError("too much nesting in normalize_meep_output")
 
     while current_depth < 3:
-        normalized_grad = [normalized_grad]
+        normalized_grad = [obj_grad]
         current_depth += 1
 
-    # Now we need to re-organize into the correct order:
-    normalized_grad = [list(layer) for layer in zip(*normalized_grad)]
+    normalized_grad = np.array(obj_grad)
+    normalized_grad = np.transpose(normalized_grad, (0, 1, 3, 2))
 
     ret = (obj_val, normalized_grad)
 

@@ -17,38 +17,48 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import importlib
-import os
-from typing import Any
-from pydantic import BaseModel, computed_field
-from pathlib import Path
-import logging
 import json
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, computed_field
 
 from adjoint_helper.core.defs import WeightsType
 from adjoint_helper.utils.logging_utils import am_mpi_master
 
-from ..core.base_settings import SimulationSettings, OptimizationSettings
+from ..core.base_settings import OptimizationSettings, SimulationSettings
 
 logger = logging.getLogger(__name__)
 
 
 class OptimizationHistory(BaseModel):
     optimization: OptimizationSettings
-    settings: SimulationSettings
 
     @computed_field
     @property
     def fingerprint(self) -> str:
-        return self.settings.get_fingerprint()
+        return self.optimization.simulation_settings.get_fingerprint()
+
+    @computed_field
+    @property
+    def settings(self) -> SimulationSettings:
+        return self.optimization.simulation_settings
 
     def save_to_json(self) -> None:
-        fpath = self.settings.data_dir / self.settings.history_fname
+        fpath = (
+            self.optimization.simulation_settings.data_dir
+            / self.optimization.simulation_settings.history_fname
+        )
         if am_mpi_master():
             fpath.parent.mkdir(parents=True, exist_ok=True)
             data = self.model_dump()
 
-            settings_dict = self.settings.model_dump()
-            settings_dict["__class_path__"] = self.settings.class_path
+            settings_dict = self.optimization.simulation_settings.model_dump()
+            settings_dict["__class_path__"] = (
+                self.optimization.simulation_settings.class_path
+            )
 
             data["settings"] = settings_dict
 
@@ -88,32 +98,29 @@ class OptimizationHistory(BaseModel):
     @classmethod
     def load_or_create(
         cls,
-        settings: SimulationSettings,
-        default_optimization: OptimizationSettings,
+        optimization: OptimizationSettings,
         fpath: Path | None = None,
         strict: bool = True,
     ) -> "OptimizationHistory":
         if fpath is None:
-            fpath = settings.history_path
+            fpath = optimization.simulation_settings.history_path
 
         hist = OptimizationHistory.load_if_exists(
-            settings=settings,
-            optimizer=default_optimization.optimizer,
+            optimization=optimization,
+            optimizer=optimization.optimizer,
             fpath=fpath,
             strict=strict,
         )
 
         if hist is None:
-            hist = OptimizationHistory(
-                optimization=default_optimization, settings=settings
-            )
+            hist = OptimizationHistory(optimization=optimization)
 
         return hist
 
     @classmethod
     def load_if_exists(
         cls,
-        settings: SimulationSettings,
+        optimization: OptimizationSettings,
         optimizer: Any,
         fpath: Path | None = None,
         strict: bool = True,
@@ -121,12 +128,12 @@ class OptimizationHistory(BaseModel):
         """Because we cannot currently serialze and store the optimizer,
         you must supply it when loading history."""
         if fpath is None:
-            fpath = settings.history_path
+            fpath = optimization.simulation_settings.history_path
 
         if fpath.is_file():
             logger.info(f"Loading History from {fpath}")
             return cls._load_from_json(
-                settings=settings,
+                optimization=optimization,
                 optimizer=optimizer,
                 fpath=fpath,
                 strict=strict,
@@ -139,7 +146,7 @@ class OptimizationHistory(BaseModel):
     @classmethod
     def _load_from_json(
         cls,
-        settings: SimulationSettings,
+        optimization: OptimizationSettings,
         optimizer: Any,
         fpath: Path | None = None,
         strict: bool = True,
@@ -147,16 +154,42 @@ class OptimizationHistory(BaseModel):
         """Because we cannot currently serialze and store the optimizer,
         you must supply it when loading history."""
         if fpath is None:
-            fpath = settings.history_path
+            fpath = optimization.simulation_settings.history_path
 
         try:
             with open(fpath, "r") as f:
                 data = json.load(f)
 
+            # set_data = data["settings"]
+            # if "__class_path__" in set_data:
+            #     path_str = set_data.pop("__class_path__")
+            #     mod_name, class_name = path_str.rsplit(".", 1)
+            #     mod = importlib.import_module(mod_name)
+            #     concrete_set_class = getattr(mod, class_name)
+            #     settings_obj = concrete_set_class.model_validate(set_data)
+            # else:
+            #     settings_obj = SimulationSettings.model_validate(set_data)
+
             opt_data = data["optimization"]
             # TODO: Fix so we can store the optimizer so we don't
             # need to do this :(
             opt_data["optimizer"] = optimizer
+
+            # In case we have a specialized SimulationSettings we need
+            # to find it and load the appropriate module
+            set_data = opt_data["simulation_settings"]
+
+            if "__class_path__" in set_data:
+                path_str = set_data.pop("__class_path__")
+                mod_name, class_name = path_str.rsplit(".", 1)
+                mod = importlib.import_module(mod_name)
+                concrete_set_class = getattr(mod, class_name)
+                settings_obj = concrete_set_class.model_validate(set_data)
+            else:
+                settings_obj = SimulationSettings.model_validate(set_data)
+
+            opt_data["simulation_settings"] = settings_obj
+
             if "__class_path__" in opt_data:
                 path_str = opt_data.pop("__class_path__")
                 mod_name, class_name = path_str.rsplit(".", 1)
@@ -169,20 +202,10 @@ class OptimizationHistory(BaseModel):
                 # of error message
                 optimization_obj = OptimizationSettings.model_validate(opt_data)
 
-            set_data = data["settings"]
-            if "__class_path__" in set_data:
-                path_str = set_data.pop("__class_path__")
-                mod_name, class_name = path_str.rsplit(".", 1)
-                mod = importlib.import_module(mod_name)
-                concrete_set_class = getattr(mod, class_name)
-                settings_obj = concrete_set_class.model_validate(set_data)
-            else:
-                settings_obj = SimulationSettings.model_validate(set_data)
-
-            hist = cls(optimization=optimization_obj, settings=settings_obj)
+            hist = cls(optimization=optimization_obj)
 
             loaded_fingerprint = hist.fingerprint
-            current_fingerprint = settings.get_fingerprint()
+            current_fingerprint = optimization.simulation_settings.get_fingerprint()
 
             if loaded_fingerprint != current_fingerprint:
                 msg = (
@@ -205,4 +228,4 @@ class OptimizationHistory(BaseModel):
             return None
 
     def optimize(self) -> list[WeightsType]:
-        return self.optimization.optimize(self.settings)
+        return self.optimization.optimize()
