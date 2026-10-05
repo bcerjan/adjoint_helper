@@ -70,14 +70,14 @@ settings = MultiRegionExampleSettings(
     sub_ind=subInd,
     focal_distance=focal_distance,
     data_dir="./output/optax/",
+    minimum_feature_size=minimum_feature,  # "evals" assigns that number of evaluations to every bias
+    maximum_runtime=2000,
 )
 
 optax_optimization = OptaxOptimizationSettings(
     simulation_settings=settings,
-    minimum_feature_size=minimum_feature,  # "evals" assigns that number of evaluations to every bias
     # to speficify individually, use max_evals = [5, 10, 25, 5]
     evals=3,  # very few, as demonstration
-    maximum_runtime=2000,
 )
 # If history exists at the correct location (either via fpath argument or
 # data_dir / history_fname in the settings) it will be loaded. If you want

@@ -43,8 +43,6 @@ minimum_feature = 0.09
 
 designX = 15
 designY = 2.0
-n_regions = 1
-design_region_gap = 2
 
 design_regions = [
     DesignRegion(
@@ -69,6 +67,8 @@ settings = MultiParameterExampleSettings(
     enforce_symmetry=True,
     focal_distance=focal_distance,
     data_dir="./output/multi_parameter",
+    minimum_feature_size=minimum_feature,  # "evals" assigns that number of evaluations to every bias
+    maximum_runtime=2000,
 )
 
 solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n() + 1)  # for epigraph variable
@@ -77,10 +77,8 @@ nlopt_optimization = NloptEpigraphOptimizationSettings(
     simulation_settings=settings,
     n_objectives=settings.n_objectives,
     optimizer=solver,
-    minimum_feature_size=minimum_feature,  # "evals" assigns that number of evaluations to every bias
     # to speficify individually, use max_evals = [5, 10, 25, 5]
     evals=3,  # very few, as demonstration
-    maximum_runtime=2000,
     sigmoid_biases=[4, 8, 16, 32, 64, 128],
 )
 # If history exists at the correct location (either via fpath argument or
