@@ -26,11 +26,10 @@ __all__ = [
     "WeightsType",
 ]
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from typing import (
     Annotated,
-    Callable,
     Protocol,
     TypeVar,
     runtime_checkable,
@@ -68,7 +67,8 @@ type ConstraintReturnType = tuple[float, RawWeightsType]
 """
 
 SimulationReturn = tuple[list[float], list[list[list[RawWeightsType]]]]
-""" Type that we expect from the simulation / backend. """
+""" Type that we expect from the simulation / backend. Order is: 
+(design region, objective function, parameter, grad)"""
 
 type ObjectiveReturn = tuple[list[float], RawWeightsType]
 """ Type that we return from a physics objective -- a list of objective values and

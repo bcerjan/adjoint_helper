@@ -255,7 +255,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         result[:] = np.real(f0) - epigraph
 
         obj: float = np.linalg.norm(f0)  # type: ignore
-        self.obj.append(np.real(obj))
+        self.fom.append(np.real(obj))
         self.weights.append(self.simulation_settings.vector_to_arrays(weights.copy()))
         self.data.append(epigraph)
 
@@ -316,8 +316,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             biases[last_index + 1 :], start=last_index + 1
         ):
             self.sigmoid_bias = sigmoid_bias
-            # solver = self.optimizer
-            solver = nlopt.opt(nlopt.LD_MMA, weights_and_epigraph.size)
+            solver = self.optimizer
             solver.set_lower_bounds(lb)  # type: ignore
             solver.set_upper_bounds(ub)  # type: ignore
 

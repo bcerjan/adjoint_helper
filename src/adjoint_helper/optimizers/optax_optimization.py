@@ -106,9 +106,8 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 grad[:] = grad[:] + g[:] * self.linewidth_penalty
                 obj += fabrication * self.linewidth_penalty
 
-        self.obj.append(obj)
+        self.fom.append(obj)
         self.weights.append(self.simulation_settings.vector_to_arrays(weights))
-        self.data.append(obj)
         save_output(optimization=self, sigmoid_bias=self.sigmoid_bias)
 
         return [obj], grad

@@ -80,6 +80,11 @@ class BoolArray2D(PydanticNDArray):
     _ndim = 2
 
 
+class IntArray2D(PydanticNDArray):
+    _dtype = int
+    _ndim = 2
+
+
 # TODO: Make it so we can store the solver / configuraton / state
 # for people. Right now there isn't a particularly good way to do this
 # without requiring substantial setup on my end to define all of the

@@ -20,7 +20,9 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from ..core.base_settings import OptimizationSettings
+from adjoint_helper.core.defs import OptimizationFunction
+
+from ..core.base_settings import OptimizationSettings, SimulationSettings
 from ..core.optimization_history import OptimizationHistory
 from .logging_utils import am_mpi_master
 

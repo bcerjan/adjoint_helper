@@ -120,15 +120,21 @@ class OptimizationHistory(BaseModel):
     @classmethod
     def load_if_exists(
         cls,
-        optimization: OptimizationSettings,
-        optimizer: Any,
-        fpath: Path | None = None,
+        optimization: OptimizationSettings | None = None,
+        optimizer: Any = None,
+        fpath: Path | str | None = None,
         strict: bool = True,
     ) -> "OptimizationHistory | None":
         """Because we cannot currently serialze and store the optimizer,
         you must supply it when loading history."""
-        if fpath is None:
+        if fpath is None and optimization is not None:
             fpath = optimization.simulation_settings.history_path
+
+        if isinstance(fpath, str):
+            fpath = Path(fpath)
+
+        if fpath is None:
+            raise ValueError("No filepath supplied or located from the optimization")
 
         if fpath.is_file():
             logger.info(f"Loading History from {fpath}")
@@ -146,15 +152,18 @@ class OptimizationHistory(BaseModel):
     @classmethod
     def _load_from_json(
         cls,
-        optimization: OptimizationSettings,
-        optimizer: Any,
+        optimization: OptimizationSettings | None = None,
+        optimizer: Any = None,
         fpath: Path | None = None,
         strict: bool = True,
     ) -> "OptimizationHistory | None":
         """Because we cannot currently serialze and store the optimizer,
         you must supply it when loading history."""
-        if fpath is None:
+        if fpath is None and optimization is not None:
             fpath = optimization.simulation_settings.history_path
+
+        if fpath is None:
+            raise ValueError("No filepath supplied or located from the optimization")
 
         try:
             with open(fpath, "r") as f:
@@ -177,7 +186,7 @@ class OptimizationHistory(BaseModel):
 
             # In case we have a specialized SimulationSettings we need
             # to find it and load the appropriate module
-            set_data = opt_data["simulation_settings"]
+            set_data = data["settings"]
 
             if "__class_path__" in set_data:
                 path_str = set_data.pop("__class_path__")
@@ -186,7 +195,10 @@ class OptimizationHistory(BaseModel):
                 concrete_set_class = getattr(mod, class_name)
                 settings_obj = concrete_set_class.model_validate(set_data)
             else:
-                settings_obj = SimulationSettings.model_validate(set_data)
+                raise ValueError(
+                    "Something went wrong when loading the SimulationSettings -- you can"
+                    " try to manually add missing __class_path__ key to the output file."
+                )
 
             opt_data["simulation_settings"] = settings_obj
 
@@ -200,26 +212,31 @@ class OptimizationHistory(BaseModel):
                 # TODO: Check if this (and settings below) always fail.
                 # I believe they should, so this should probably be some kind
                 # of error message
+                raise ValueError(
+                    "Something went wrong when loading the OptimizationSettings -- you can"
+                    " try to manually add missing __class_path__ key to the output file."
+                )
                 optimization_obj = OptimizationSettings.model_validate(opt_data)
 
             hist = cls(optimization=optimization_obj)
 
-            loaded_fingerprint = hist.fingerprint
-            current_fingerprint = optimization.simulation_settings.get_fingerprint()
+            if optimization is not None:
+                loaded_fingerprint = hist.fingerprint
+                current_fingerprint = optimization.simulation_settings.get_fingerprint()
 
-            if loaded_fingerprint != current_fingerprint:
-                msg = (
-                    f"\nWARNING: FINGERPRINT MISMATCH!\n"
-                    f"The loaded checkpoint was created for a DIFFERENT simulation.\n"
-                    f"Loaded Fingerprint: {loaded_fingerprint[:8]}...\n"
-                    f"Current Fingerprint: {current_fingerprint[:8]}...\n"
-                    f"Proceeding may produce physically invalid results."
-                )
+                if loaded_fingerprint != current_fingerprint:
+                    msg = (
+                        f"\nWARNING: FINGERPRINT MISMATCH!\n"
+                        f"The loaded checkpoint was created for a DIFFERENT simulation.\n"
+                        f"Loaded Fingerprint: {loaded_fingerprint[:8]}...\n"
+                        f"Current Fingerprint: {current_fingerprint[:8]}...\n"
+                        f"Proceeding may produce physically invalid results."
+                    )
 
-                if strict:
-                    raise ValueError(msg)
-                else:
-                    logger.warning(msg)
+                    if strict:
+                        raise ValueError(msg)
+                    else:
+                        logger.warning(msg)
 
             return hist
 

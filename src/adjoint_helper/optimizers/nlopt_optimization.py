@@ -28,7 +28,6 @@ from adjoint_helper.core.pydantic_defs import SolverConfig
 
 from ..core.base_settings import (
     OptimizationSettings,
-    SimulationSettings,
 )
 from ..core.defs import (
     RawWeightsType,
@@ -118,7 +117,6 @@ class NloptOptimizationSettings(OptimizationSettings):
         self,
         weights: RawWeightsType,
         grad: RawWeightsType,
-        settings: SimulationSettings,
     ) -> float:
         """
         Internal objective function, just calls the user-supplied objective function
@@ -136,9 +134,8 @@ class NloptOptimizationSettings(OptimizationSettings):
         if grad is not None and grad.size > 0:
             grad[:] = vec_out
 
-        self.obj.append(obj)
+        self.fom.append(obj)
         self.weights.append(self.simulation_settings.vector_to_arrays(weights.copy()))
-        self.data.append(obj)
         save_output(self, self.sigmoid_bias)
 
         return obj
@@ -177,7 +174,7 @@ class NloptOptimizationSettings(OptimizationSettings):
 
             if self.apply_linewidth:
                 solver.add_inequality_constraint(  # type: ignore
-                    lambda w, g: self._linewidth_cons(weights=w, grad=g),  # pyright: ignore[reportUnknownArgumentType]
+                    self._linewidth_cons,
                     self.linewidth_tol,
                 )
 

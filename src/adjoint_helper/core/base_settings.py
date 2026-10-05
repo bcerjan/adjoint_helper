@@ -74,7 +74,11 @@ class DesignRegion(BaseModel):
     """Class to store information about a single design region and to perform
     operations on it (masking and symmetry). The only mandatory inputs are x_size,
     y_size, and the resolution of the design region. Everything else is optional tools
-    to help manage your simulation."""
+    to help manage your simulation.
+
+    `index_0` corresponds to the index when the weights are 0 (similarly for `index_1`).
+    These are only needed by some of the optimization backends, so they are optional
+    """
 
     model_config = ConfigDict(
         extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
@@ -83,8 +87,8 @@ class DesignRegion(BaseModel):
     x_size: float
     y_size: float
     resolution: int
-    medium_0: Any = None
-    medium_1: Any = None
+    index_0: Any = None
+    index_1: Any = None
     connected_sides: list[Edge] = []
     weights: WeightsType = np.array([])
     mask: MaskRegion | None = None
@@ -419,6 +423,10 @@ class SimulationSettings(BaseModel, ABC):
     enforce_symmetry: bool = False
     history_fname: str
     data_dir: Path = Path("./output").resolve()
+    decay_by: float = 1e-6
+    minimum_runtime: float = 0
+    maximum_runtime: float = 2000
+    minimum_feature_size: float = 0.05
 
     @model_validator(mode="before")
     @classmethod
@@ -795,7 +803,7 @@ class OptimizationSettings(BaseModel, ABC):
         extra="allow", arbitrary_types_allowed=True, ser_json_bytes="base64"
     )
 
-    obj: list[float] = []
+    fom: list[float] = []
     data: list[float] = []
     weights: list[list[WeightsType]] = Field(default_factory=list)  # type: ignore
     grad: list[np.float64] = []
@@ -813,16 +821,12 @@ class OptimizationSettings(BaseModel, ABC):
     max_evals: list[int] = Field(default_factory=list)
     _use_epsavg: bool = False
     _use_damping: bool = True
-    maximum_runtime: float = 2000
-    minimum_runtime: float = 0
-    decay_by: float = 1e-10
     use_smoothed_projection: bool = False
-    minimum_feature_size: float = 0.05
 
     evals: int | None = Field(default=None, exclude=True, repr=False)
     optimizer: Any = Field(exclude=True, repr=False)
 
-    simulation_settings: SimulationSettings
+    simulation_settings: SimulationSettings = Field(exclude=True, repr=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -872,7 +876,7 @@ class OptimizationSettings(BaseModel, ABC):
     @property
     def filter_radius(self) -> float:
         return get_conic_radius_from_eta_e(  # type: ignore
-            self.minimum_feature_size, self.sigmoid_erosion
+            self.simulation_settings.minimum_feature_size, self.sigmoid_erosion
         )
 
     @computed_field
@@ -899,7 +903,7 @@ class OptimizationSettings(BaseModel, ABC):
     @computed_field
     @property
     def last_completed_index(self) -> int:
-        return len(self.obj) - 1
+        return len(self.fom) - 1
 
     @property
     def bias(self) -> float:
