@@ -1,11 +1,32 @@
-import adjoint_helper as ah
+"""
+Adjoint Helper
+Copyright (C) 2026 Ben Cerjan
 
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
 
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
+"""
+This file contains a demonstration of a simple single-region single-objective
+optimization. The settings (the only hard part) are defined separately so they
+can be reused in other examples.
+"""
+import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
-import autograd.numpy as npa
 
+import adjoint_helper as ah
 from adjoint_helper.utils.normalization_functions import (
     normalize_meep_output,
     normalize_meep_weights,
@@ -35,37 +56,57 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
     subInd: float
     bgInd: float
     wavelength: float
-    resolution: int
+    resolution: int  # type: ignore
+
+    @property
+    def _pml_len(self) -> float:
+        return self.wavelength * 2
+
+    @property
+    def _padding(self) -> float:
+        return self.wavelength * 2
+
+    @property
+    def _cell(self) -> mp.Vector3:
+        return mp.Vector3(
+            2 * self._pml_len + self.design_regions[0].x_size + 2 * self._padding,
+            2 * self._pml_len
+            + self.design_regions[0].y_size
+            + 2 * self._padding
+            + self.wgWidth,
+            2 * self._pml_len + self.wgHeight + 2 * self._padding,
+        )
+
+    @property
+    def _df(self) -> float:
+        return 0.1
 
     def create_geometry(self) -> list[mp.GeometricObject]:
         """
         Function to create overall geometry without the design region.
         """
 
-        padding = self.wavelength * 2
-        pmlLen = self.wavelength * 2
-
-        cell = mp.Vector3(
-            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
-            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
-            2 * pmlLen + self.wgHeight + 2 * padding,
-        )
         matMed = mp.Medium(index=self.matInd)
         subMed = mp.Medium(index=self.subInd)
 
         return [
             # Waveguide
             mp.Block(
-                size=mp.Vector3(pmlLen + padding, self.wgWidth, self.wgHeight),
+                size=mp.Vector3(
+                    self._pml_len + self._padding, self.wgWidth, self.wgHeight
+                ),
                 center=mp.Vector3(
-                    -(pmlLen + padding + self.design_regions[0].x_size) / 2, 0, 0
+                    -(self._pml_len + self._padding + self.design_regions[0].x_size)
+                    / 2,
+                    0,
+                    0,
                 ),
                 material=matMed,
             ),
             # Substrate:
             mp.Block(
-                size=cell,
-                center=mp.Vector3(0, 0, -(cell.z / 2 + self.wgHeight / 2)),
+                size=self._cell,
+                center=mp.Vector3(0, 0, -(self._cell.z / 2 + self.wgHeight / 2)),
                 material=subMed,
             ),
         ]
@@ -106,33 +147,25 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         return ah.MaskRegion(locations=border_mask, value=1)  # type: ignore
 
     def normalization(self) -> float | list[float]:
-        padding = 2 * self.wavelength
-        pmlLen = 2 * self.wavelength
-
-        cell = mp.Vector3(
-            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
-            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
-            2 * pmlLen + self.wgHeight + 2 * padding,
-        )
 
         symmetries: list[mp.Symmetry] = []
 
         if self.enforce_symmetry:
             symmetries = [mp.Mirror(direction=mp.Y, phase=-1)]  # type: ignore
 
-        pmlLayers = [mp.PML(thickness=pmlLen)]
+        pmlLayers = [mp.PML(thickness=self._pml_len)]
 
         freq = 1 / self.wavelength
 
-        df = 0.1
+        src = mp.Vector3(
+            self._cell.x - 2 * self._pml_len, self._cell.y - 2 * self._pml_len, 0
+        )
 
-        src = mp.Vector3(cell.x - 2 * pmlLen, cell.y - 2 * pmlLen, 0)
-
-        srcPos = mp.Vector3(0, 0, padding / 2)
+        srcPos = mp.Vector3(0, 0, self._padding / 2)
 
         sources: list[mp.Source] = [
             mp.GaussianBeamSource(
-                src=mp.GaussianSource(freq, fwidth=df),
+                src=mp.GaussianSource(freq, fwidth=self._df),
                 center=srcPos,
                 size=src,
                 beam_x0=-1 * srcPos,
@@ -146,12 +179,13 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         backMed = mp.Medium(index=self.bgInd)
 
-        geometry = self.create_geometry()
+        # geometry = self.create_geometry()
+        geometry = []
 
         sim = mp.Simulation(
             resolution=self.resolution,
             default_material=backMed,
-            cell_size=cell,
+            cell_size=self._cell,
             sources=sources,
             geometry=geometry,
             boundary_layers=pmlLayers,
@@ -160,7 +194,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         fr = mp.FluxRegion(
             center=mp.Vector3(srcPos.x, srcPos.y, srcPos.z - self.wavelength / 2),
-            size=mp.Vector3(cell.x, cell.y, 0),
+            size=mp.Vector3(self._cell.x, self._cell.y, 0),
         )
         flux = sim.add_flux(freq, 0, 1, fr)  # type: ignore
 
@@ -192,39 +226,31 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         optimization: OptimizationSettings containing optimization parameters
 
         """
-        padding = 2 * self.wavelength
-        pmlLen = 2 * self.wavelength
-
-        cell = mp.Vector3(
-            2 * pmlLen + self.design_regions[0].x_size + 2 * padding,
-            2 * pmlLen + self.design_regions[0].y_size + 2 * padding + self.wgWidth,
-            2 * pmlLen + self.wgHeight + 2 * padding,
-        )
 
         symmetries: list[mp.Symmetry] = []
 
         if self.enforce_symmetry:
             symmetries = [mp.Mirror(direction=mp.Y_DIR, phase=-1)]  # type: ignore
 
-        pmlLayers = [mp.PML(thickness=pmlLen)]
+        pmlLayers = [mp.PML(thickness=self._pml_len)]
 
         freq = 1 / self.wavelength
 
-        df = 0.1
+        src = mp.Vector3(
+            self._cell.x - 2 * self._pml_len, self._cell.y - 2 * self._pml_len, 0
+        )
 
-        src = mp.Vector3(cell.x - 2 * pmlLen, cell.y - 2 * pmlLen, 0)
-
-        srcPos = mp.Vector3(0, 0, padding / 2 + self.wgHeight)
+        srcPos = mp.Vector3(0, 0, self._padding / 2 + self.wgHeight)
 
         measurePos = mp.Vector3(
-            -(pmlLen + padding / 2 + self.design_regions[0].x_size) / 2,
+            -(self._pml_len + self._padding / 2 + self.design_regions[0].x_size) / 2,
             0,
             0,
         )
 
         sources: list[mp.Source] = [
             mp.GaussianBeamSource(
-                src=mp.GaussianSource(freq, fwidth=df),
+                src=mp.GaussianSource(freq, fwidth=self._df),
                 center=srcPos,
                 size=src,
                 beam_x0=-1 * srcPos,
@@ -274,7 +300,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         sim = mp.Simulation(
             resolution=self.resolution,
             default_material=backMed,
-            cell_size=cell,
+            cell_size=self._cell,
             sources=sources,
             geometry=geometry,
             boundary_layers=pmlLayers,
@@ -295,9 +321,9 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         obList: list[mpa.ObjectiveQuantity] = [te0]
 
-        # 1 / Mode strength divided by input flux (inverted for minimization)
+        # 1 - power to make it a minimization problem
         def J(alpha: float) -> float:
-            return npa.abs(self.baseline_optimization_value / alpha)  # type: ignore
+            return 1 - npa.abs(alpha**2 / self.baseline_optimization_value)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,
@@ -305,8 +331,9 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
             objective_arguments=obList,
             design_regions=[matGridRegion],
             frequencies=[freq],
-            decay_by=optimization.decay_by,
-            maximum_run_time=optimization.maximum_runtime,
+            decay_by=self.decay_by,
+            maximum_run_time=self.maximum_runtime,
+            minimum_run_time=self.minimum_runtime,
         )
 
         return opt
@@ -330,7 +357,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
-            val, grad = normalize_meep_output((val, grad))
+            val, grad = normalize_meep_output((val, grad), self)
 
             return (val, grad)
 

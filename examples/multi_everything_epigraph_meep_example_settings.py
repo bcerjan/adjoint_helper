@@ -28,9 +28,10 @@ class MultiEverythingExampleSettings(ah.SimulationSettings):
     """
 
     design_region_ind: float
+    design_region_spacing: float = 1
     focal_distance: float
     wavelengths: list[float]
-    resolution: int
+    resolution: int  # type: ignore
 
     @property
     def max_wavelength(self) -> float:
@@ -123,62 +124,39 @@ class MultiEverythingExampleSettings(ah.SimulationSettings):
         matgrid_regions: list[mpa.DesignRegion] = []
 
         geometry = []
-        dr = self.design_regions[0]
-        matGrid = mp.MaterialGrid(
-            mp.Vector3(dr.nx_design, dr.ny_design),
-            mp.air,
-            matMed,
-            weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
-            beta=0,
-            do_averaging=optimization.use_epsavg,
-            damping=optimization.use_damping,
-            grid_type="U_MEAN",
-        )
+        total_height = -cell.y / 2 + pmlLen + padding
+        for dr in self.design_regions:
+            matGrid = mp.MaterialGrid(
+                mp.Vector3(dr.nx_design, dr.ny_design),
+                mp.air,
+                matMed,
+                weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
+                beta=0,
+                do_averaging=optimization.use_epsavg,
+                damping=optimization.use_damping,
+                grid_type="U_MEAN",
+            )
 
-        matGridRegion = mpa.DesignRegion(
-            matGrid,  # type: ignore
-            volume=mp.Volume(
-                center=mp.Vector3(0, -dr.y_size),
-                size=mp.Vector3(dr.x_size, dr.y_size),
-            ),
-        )
-        matGrid2 = mp.MaterialGrid(
-            mp.Vector3(dr.nx_design, dr.ny_design),
-            mp.air,
-            matMed,
-            weights=np.ones((dr.nx_design, dr.ny_design)) * 0.5,
-            beta=0,
-            do_averaging=optimization.use_epsavg,
-            damping=optimization.use_damping,
-            grid_type="U_MEAN",
-        )
+            matGridRegion = mpa.DesignRegion(
+                matGrid,  # type: ignore
+                volume=mp.Volume(
+                    center=mp.Vector3(0, total_height + dr.y_size / 2),
+                    size=mp.Vector3(dr.x_size, dr.y_size),
+                ),
+            )
 
-        matGridRegion2 = mpa.DesignRegion(
-            matGrid2,  # type: ignore
-            volume=mp.Volume(
-                center=mp.Vector3(0, dr.y_size),
-                size=mp.Vector3(dr.x_size, dr.y_size),
-            ),
-        )
+            matgrid_regions.append(matGridRegion)
 
-        matgrid_regions.append(matGridRegion)
-        matgrid_regions.append(matGridRegion2)
+            total_height += dr.y_size + self.design_region_spacing
 
-        geometry.append(
-            mp.Block(
-                center=matGridRegion.center,
-                size=matGridRegion.size,
-                material=matGrid,
-            ),
-        )
+            geometry.append(
+                mp.Block(
+                    center=matGridRegion.center,
+                    size=matGridRegion.size,
+                    material=matGrid,
+                ),
+            )
 
-        geometry.append(
-            mp.Block(
-                center=matGridRegion2.center,
-                size=matGridRegion2.size,
-                material=matGrid2,
-            ),
-        )
         sim = mp.Simulation(
             resolution=self.resolution,
             default_material=mp.air,
@@ -228,8 +206,8 @@ class MultiEverythingExampleSettings(ah.SimulationSettings):
             objective_arguments=obList,
             design_regions=matgrid_regions,
             frequencies=freqs,
-            decay_by=optimization.decay_by,
-            maximum_run_time=optimization.maximum_runtime,
+            decay_by=self.decay_by,
+            maximum_run_time=self.maximum_runtime,
         )
 
         return opt
@@ -254,7 +232,7 @@ class MultiEverythingExampleSettings(ah.SimulationSettings):
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
-            val, grad = normalize_meep_output((val, grad))
+            val, grad = normalize_meep_output((val, grad), self)
 
             return (val, grad)
 

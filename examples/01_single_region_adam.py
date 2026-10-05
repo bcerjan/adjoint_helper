@@ -64,6 +64,7 @@ settings = SingleRegionExampleSettings(
     wgHeight=wgHeight,
     history_fname="Single_Region_Nlopt.out",
     enforce_symmetry=True,
+    minimum_feature_size=minimum_feature,
 )
 
 
@@ -73,7 +74,6 @@ designs likely need little adjustment.
 """
 adam_optimization = OptaxOptimizationSettings(
     simulation_settings=settings,
-    minimum_feature_size=minimum_feature,
     total_evals=5,  # very few, as demonstration.
 )
 

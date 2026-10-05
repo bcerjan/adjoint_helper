@@ -1,12 +1,9 @@
-from typing import List
-import adjoint_helper as ah
-
-
+import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
-import autograd.numpy as npa
 
+import adjoint_helper as ah
 from adjoint_helper.utils.normalization_functions import (
     normalize_meep_output,
     normalize_meep_weights,
@@ -29,7 +26,7 @@ class MultiParameterExampleSettings(ah.SimulationSettings):
     design_region_ind: float
     focal_distance: float
     wavelengths: list[float]
-    resolution: int
+    resolution: int  # type: ignore
 
     @property
     def max_wavelength(self) -> float:
@@ -174,7 +171,7 @@ class MultiParameterExampleSettings(ah.SimulationSettings):
         obList: list[mpa.ObjectiveQuantity] = [far_fields]
 
         # We negate to make this a minimization objective
-        def J(far_field: List[List[complex]]) -> float:
+        def J(far_field: list[list[complex]]) -> float:
             return -(npa.abs(far_field[0, :, 2]) ** 2)  # type: ignore
 
         opt = mpa.OptimizationProblem(
@@ -183,8 +180,8 @@ class MultiParameterExampleSettings(ah.SimulationSettings):
             objective_arguments=obList,
             design_regions=matgrid_regions,
             frequencies=freqs,
-            decay_by=optimization.decay_by,
-            maximum_run_time=optimization.maximum_runtime,
+            decay_by=self.decay_by,
+            maximum_run_time=self.maximum_runtime,
         )
 
         return opt
@@ -210,7 +207,7 @@ class MultiParameterExampleSettings(ah.SimulationSettings):
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
-            val, grad = normalize_meep_output((val, grad))
+            val, grad = normalize_meep_output((val, grad), self)
             print(np.array(grad).shape)
 
             return (val, grad)

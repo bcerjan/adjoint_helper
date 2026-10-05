@@ -1,12 +1,9 @@
-from typing import List
-import adjoint_helper as ah
-
-
+import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
-import autograd.numpy as npa
 
+import adjoint_helper as ah
 from adjoint_helper.utils.normalization_functions import (
     normalize_meep_output,
     normalize_meep_weights,
@@ -36,7 +33,7 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
     sub_ind: float
     focal_distance: float
     wavelength: float
-    resolution: int
+    resolution: int  # type: ignore
 
     def _get_padding(self) -> float:
         return self.wavelength * 2
@@ -45,11 +42,10 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
         return 1.0
 
     def get_max_design_width(self) -> float:
-        max = -1
+        max_w = -1
         for d in self.design_regions:
-            if max < d.x_size:
-                max = d.x_size
-        return max
+            max_w = max(max_w, d.x_size)
+        return max_w
 
     def get_total_design_height(self) -> float:
         design_y = np.sum([d.y_size for d in self.design_regions])
@@ -213,7 +209,7 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
         obList: list[mpa.ObjectiveQuantity] = [far_fields]
 
         # We negate to make this a minimization objective
-        def J(far_field: List[List[complex]]) -> float:
+        def J(far_field: list[list[complex]]) -> float:
             return -npa.abs(far_field[0, :, 2] ** 2)  # type: ignore
 
         opt = mpa.OptimizationProblem(
@@ -222,8 +218,8 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
             objective_arguments=obList,
             design_regions=matgrid_regions,
             frequencies=[freq],
-            decay_by=optimization.decay_by,
-            maximum_run_time=optimization.maximum_runtime,
+            decay_by=self.decay_by,
+            maximum_run_time=self.maximum_runtime,
         )
 
         return opt
@@ -248,7 +244,7 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
-            val, grad = normalize_meep_output((val, grad))
+            val, grad = normalize_meep_output((val, grad), self)
 
             return (val, grad)
 

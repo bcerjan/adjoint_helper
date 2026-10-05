@@ -68,6 +68,7 @@ settings = SingleRegionExampleSettings(
     wgHeight=wgHeight,
     history_fname="Single_Region_Nlopt.out",
     enforce_symmetry=True,
+    minimum_feature_size=minimum_feature,
 )
 
 
@@ -81,7 +82,6 @@ solver = nlopt.opt(nlopt.LD_CCSAQ, settings.total_n())  # type: ignore
 nlopt_optimization = NloptOptimizationSettings(
     simulation_settings=settings,
     optimizer=solver,
-    minimum_feature_size=minimum_feature,
     evals=2,  # very few, as demonstration.
 )
 
