@@ -27,6 +27,7 @@ __all__ = [
 ]
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     Annotated,
@@ -35,8 +36,10 @@ from typing import (
     runtime_checkable,
 )
 
-import numpy as np
+# import numpy as np
 from pydantic import BaseModel, ConfigDict
+
+from adjoint_helper.core.differentiation_defs import anp
 
 from .pydantic_defs import BoolArray2D, FloatArray1D, FloatArray2D
 
@@ -50,13 +53,13 @@ class Edge(Enum):
 
 
 type WeightsType = Annotated[
-    np.ndarray[tuple[int, int], np.dtype[np.float64]], FloatArray2D
+    anp.ndarray[tuple[int, int], anp.dtype[anp.float64 | anp.float32]], FloatArray2D
 ]
 """Weights laid out 'correctly' (that is, a 2D matrix).
 """
 
 type RawWeightsType = Annotated[
-    np.ndarray[tuple[int], np.dtype[np.float64]], FloatArray1D
+    anp.ndarray[tuple[int], anp.dtype[anp.float64 | anp.float32]], FloatArray1D
 ]
 """Weights that have been flattened into 1D. Could be either for a single
 design region or for several that have been concatenated.
@@ -65,6 +68,28 @@ design region or for several that have been concatenated.
 type ConstraintReturnType = tuple[float, RawWeightsType]
 """Return type for constraints (linewidth/connectivity)
 """
+
+
+@dataclass
+class Gradient:
+    grad: RawWeightsType
+
+
+@dataclass
+class ParameterReturn:
+    parameter: list[Gradient] = field(default_factory=list)
+
+
+@dataclass
+class ObjectiveFunctionReturn:
+    objective: list[ParameterReturn] = field(default_factory=list)
+    val: list[float] = field(default_factory=list)
+
+
+@dataclass
+class DesignRegionReturn:
+    design_region: list[ObjectiveFunctionReturn] = field(default_factory=list)
+
 
 SimulationReturn = tuple[list[float], list[list[list[RawWeightsType]]]]
 """ Type that we expect from the simulation / backend. Order is: 
@@ -141,7 +166,7 @@ class MaskRegion(BaseModel):
     """Definitions for forced values for design variables.
 
     Args:
-        locations (npt.NDArray[np.bool_]): Boolean array for where the mask
+        locations (npt.NDArray[anp.bool_]): Boolean array for where the mask
             should be enforced. Must be the same size as the design region.
         value (float): What value should be enforced at these positions?
             Should be in the range [0, 1] (inclusive)
@@ -153,37 +178,37 @@ class MaskRegion(BaseModel):
     value: float  # value to enforce at positions, should be in [0, 1]
 
 
-T = TypeVar("T", bound=np.ndarray)
+T = TypeVar("T", bound=anp.ndarray)
 
 
 def _mean_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.mean(stacked, axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.mean(stacked, axis=0)
 
 
 def _max_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.max(stacked, axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.max(stacked, axis=0)
 
 
 def _min_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.min(stacked, axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.min(stacked, axis=0)
 
 
 def _sum_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.sum(stacked, axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.sum(stacked, axis=0)
 
 
 def _abs_max_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.max(np.abs(stacked), axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.max(anp.abs(stacked), axis=0)
 
 
 def _abs_min_func(data: list[T]) -> T:
-    stacked = np.stack(data, axis=0)
-    return np.min(np.abs(stacked), axis=0)
+    stacked = anp.stack(data, axis=0)
+    return anp.min(anp.abs(stacked), axis=0)
 
 
 _OPERATION_REGISTRY: dict[str, Callable[[list[T]], T]] = {
@@ -240,7 +265,7 @@ def combine_gradients_by_design_region(
 def combine_gradients_by_objective_function(
     grad_list: list[list[list[RawWeightsType]]],
     operation: str = "mean",
-) -> list[np.ndarray[tuple[int, int], np.dtype[np.float64]]]:
+) -> list[anp.ndarray[tuple[int, int], anp.dtype[anp.float64]]]:
     """Function to apply 'simple' transforms to a set of stacked gradients. Returns a list
     separated by design region and design parameter (e.g. for epigraph optimization).
     Within each design region, each objective function is collapsed -- this means that
@@ -256,13 +281,13 @@ def combine_gradients_by_objective_function(
         `list[list[list[RawWeightsType]]]`: backpropagated gradients from simulation
 
     Returns:
-        `list[np.ndarray[tuple[int,int], np.dtype[np.float64]]`:
+        `list[anp.ndarray[tuple[int,int], anp.dtype[anp.float64]]`:
     """
     check_operation(operation)
 
     flattened = []
     for obj_fun in grad_list:
-        stacked = np.stack(obj_fun, axis=0)
+        stacked = anp.stack(obj_fun, axis=0)
         flattened.append(_OPERATION_REGISTRY[operation]([stacked]))
 
     return flattened
@@ -273,9 +298,9 @@ def _flatten_to_arrays(nested: list[list[RawWeightsType]]) -> list[RawWeightsTyp
 
     def _generator(items):
         for item in items:
-            if isinstance(item, np.ndarray) and item.ndim == 1:
+            if isinstance(item, anp.ndarray) and item.ndim == 1:
                 yield item
-            elif isinstance(item, np.ndarray):
+            elif isinstance(item, anp.ndarray):
                 raise ValueError(
                     f"Expected only 1-dimensional ndarray, got: {item.ndim}"
                 )

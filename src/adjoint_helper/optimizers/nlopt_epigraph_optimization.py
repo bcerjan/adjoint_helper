@@ -17,15 +17,15 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 __all__ = ["NloptEpigraphOptimizationSettings"]
-
 import logging
 from typing import Any
 
 import nlopt  # type: ignore
-import numpy as np
+import numpy as real_np
 import numpy.typing as npt
 from pydantic import Field, model_validator
 
+from adjoint_helper.core.differentiation_defs import anp
 from adjoint_helper.core.pydantic_defs import SolverConfig
 
 from ..core.base_settings import (
@@ -66,8 +66,8 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     connectivity_tol: float = 1e-3
     optimizer: nlopt.opt = Field(exclude=True)
     n_objectives: int
-    objective_constraints: RawWeightsType = np.array([])
-    epigraph_min: float = -np.inf
+    objective_constraints: RawWeightsType = anp.array([])
+    epigraph_min: float = -anp.inf
     epigraph_max: float = 0
 
     @model_validator(mode="before")
@@ -96,27 +96,29 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
     @classmethod
     def fix_objective_constraints(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            cons = data.get("objective_constraints", np.array([]))  # type: ignore
+            cons = data.get("objective_constraints", anp.array([]))  # type: ignore
 
             n: int = data.get("n_objectives")  # type: ignore
 
             if isinstance(cons, (int, float)) and n > 0:
-                data["objective_constraints"] = np.array([cons] * n, dtype=np.float64)
+                data["objective_constraints"] = anp.array([cons] * n, dtype=anp.float64)
             elif isinstance(cons, list) and n > 0:
                 if len(cons) == 0:  # type: ignore
-                    data["objective_constraints"] = np.array(
-                        [DEFAULT_OBJECTIVE_TOL] * n, dtype=np.float64
+                    data["objective_constraints"] = anp.array(
+                        [DEFAULT_OBJECTIVE_TOL] * n, dtype=anp.float64
                     )
                 elif len(cons) == 1:  # type: ignore
-                    data["objective_constraints"] = np.array(cons * n, dtype=np.float64)
+                    data["objective_constraints"] = anp.array(
+                        cons * n, dtype=anp.float64
+                    )
                 else:
-                    data["objective_constraints"] = np.array(cons, dtype=np.float64)
-            elif isinstance(cons, np.ndarray):
+                    data["objective_constraints"] = anp.array(cons, dtype=anp.float64)
+            elif isinstance(cons, anp.ndarray):
                 if cons.ndim == 1 and cons.size == 1:
-                    data["objective_constraints"] = np.full(n, cons, dtype=np.float64)
+                    data["objective_constraints"] = anp.full(n, cons, dtype=anp.float64)
                 elif cons.size == 0:
-                    data["objective_constraints"] = np.array(
-                        [DEFAULT_OBJECTIVE_TOL] * n, dtype=np.float64
+                    data["objective_constraints"] = anp.array(
+                        [DEFAULT_OBJECTIVE_TOL] * n, dtype=anp.float64
                     )
 
         return data  # type: ignore
@@ -145,7 +147,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             for parameter in objective_function
         ]
 
-        return np.concatenate(ret)
+        return anp.concatenate(ret)
 
     def _unstack_grads(self, grads: RawWeightsType) -> list[list[list[RawWeightsType]]]:
         idx = 0
@@ -173,14 +175,14 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         is objective_function_idx, second is n_design_parameter_idx, third is stacked gradients
         for all design regions."""
         temp = [
-            [np.array([])] * self.simulation_settings.n_design_parameters
+            [anp.array([])] * self.simulation_settings.n_design_parameters
         ] * self.simulation_settings.n_objective_functions
         for obj_idx in range(self.simulation_settings.n_objective_functions):
             for param_idx in range(self.simulation_settings.n_design_parameters):
                 temp_gs = []
                 for dr_idx in range(self.simulation_settings.n_design_regions):
                     temp_gs.append(grads[dr_idx][obj_idx][param_idx])
-                temp[obj_idx][param_idx] = np.concatenate(temp_gs)
+                temp[obj_idx][param_idx] = anp.concatenate(temp_gs)
         return temp
 
     def _linewidth_cons(
@@ -232,7 +234,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
     def _nlopt_epigraph_constraint(
         self,
-        result: npt.NDArray[np.float64],
+        result: npt.NDArray[anp.float64],
         epigraph_and_weights: RawWeightsType,
         gradient: RawWeightsType,
     ) -> float:
@@ -245,18 +247,20 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         f0, grad = opt(weights)
         grad = self._unstack_grads(grads=grad)
         grad = self._stack_design_region_grads(grads=grad)
-        grad = np.array(grad)
+        grad = anp.array(grad)
         grad.reshape(self.simulation_settings.n_objectives, -1)
 
         if gradient.size > 0:
             gradient[:, 0] = -1  # gradient with respect to epigraph variable
             gradient[:, 1:] = grad  # real gradients per-parameter
 
-        result[:] = np.real(f0) - epigraph
+        result[:] = anp.real(f0) - epigraph
 
-        obj: float = np.linalg.norm(f0)  # type: ignore
-        self.fom.append(np.real(obj))
-        self.weights.append(self.simulation_settings.vector_to_arrays(weights.copy()))
+        obj: float = anp.linalg.norm(f0)  # type: ignore
+        self.fom.append(anp.real(obj))
+        self.weights.append(
+            self.simulation_settings.vector_to_arrays(real_np.asarray(weights.copy()))
+        )
         self.data.append(epigraph)
 
         return obj
@@ -283,7 +287,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             optimization (OptimizationSettings): Optimization settings
 
         Returns:
-            npt.NDArray[np.float64]: Optimal weights after the optimization
+            npt.NDArray[anp.float64]: Optimal weights after the optimization
         """
 
         # First, make sure n_objectives and the settings object agree:
@@ -296,9 +300,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
         self.simulation_settings.calculate_normalization()
 
-        lb = np.zeros(self.simulation_settings.total_n())
-        ub = np.ones(self.simulation_settings.total_n())
-        weights = np.concatenate(self.simulation_settings.weights_raw)
+        lb = anp.zeros(self.simulation_settings.total_n())
+        ub = anp.ones(self.simulation_settings.total_n())
+        weights = anp.concatenate(self.simulation_settings.weights_raw)
 
         # Handle restarting:
         last_index = self.last_completed_index
@@ -307,10 +311,10 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         if last_index >= 0:
             weights = self.weights[-1]
 
-        weights_and_epigraph = np.insert(weights, 0, -1)  # initial guess
+        weights_and_epigraph = anp.insert(weights, 0, -1)  # initial guess
 
-        lb = np.insert(lb, 0, self.epigraph_min)
-        ub = np.insert(ub, 0, self.epigraph_max)
+        lb = anp.insert(lb, 0, self.epigraph_min)
+        ub = anp.insert(ub, 0, self.epigraph_max)
 
         for i, sigmoid_bias in enumerate(
             biases[last_index + 1 :], start=last_index + 1

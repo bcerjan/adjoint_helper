@@ -4,17 +4,15 @@ convolution filters (kernels), projection operators, and morphological
 transforms.
 """
 
-import sys
-from typing import List, Tuple, Union
+from typing import Union
 
-import numpy as np
-from autograd import numpy as npa
-from scipy import signal, special
+from adjoint_helper.core.differentiation_defs import anp
+from scipy import special
 
-ArrayLikeType = Union[List, Tuple, np.ndarray]
+ArrayLikeType = Union[list, tuple, anp.ndarray]
 
 
-def _centered(arr: np.ndarray, newshape: ArrayLikeType) -> np.ndarray:
+def _centered(arr: anp.ndarray, newshape: ArrayLikeType) -> anp.ndarray:
     """Formats the output of an FFT to center the zero-frequency component.
 
     A helper function borrowed from SciPy:
@@ -28,8 +26,8 @@ def _centered(arr: np.ndarray, newshape: ArrayLikeType) -> np.ndarray:
     Returns:
         The input array with the zero-frequency component as the central element.
     """
-    newshape = np.asarray(newshape)
-    currshape = np.array(arr.shape)
+    newshape = anp.asarray(newshape)
+    currshape = anp.array(arr.shape)
     startind = (currshape - newshape) // 2
     endind = startind + newshape
     myslice = [slice(startind[k], endind[k]) for k in range(len(endind))]
@@ -37,7 +35,7 @@ def _centered(arr: np.ndarray, newshape: ArrayLikeType) -> np.ndarray:
     return arr[tuple(myslice)]
 
 
-def _quarter_to_full_kernel(arr: np.ndarray, pad_to: np.ndarray) -> np.ndarray:
+def _quarter_to_full_kernel(arr: anp.ndarray, pad_to: anp.ndarray) -> anp.ndarray:
     """Constructs the full kernel from its nonnegative quadrant.
 
     Args:
@@ -49,30 +47,30 @@ def _quarter_to_full_kernel(arr: np.ndarray, pad_to: np.ndarray) -> np.ndarray:
     Returns:
         The complete kernel.
     """
-    pad_size = pad_to - 2 * np.array(arr.shape) + 1
+    pad_size = pad_to - 2 * anp.array(arr.shape) + 1
 
-    top = np.zeros((pad_size[0], arr.shape[1]))
-    bottom = np.zeros((pad_size[0], arr.shape[1] - 1))
-    middle = np.zeros((pad_to[0], pad_size[1]))
+    top = anp.zeros((pad_size[0], arr.shape[1]))
+    bottom = anp.zeros((pad_size[0], arr.shape[1] - 1))
+    middle = anp.zeros((pad_to[0], pad_size[1]))
 
     top_left = arr[:, :]
-    top_right = npa.flipud(arr[1:, :])
-    bottom_left = npa.fliplr(arr[:, 1:])
-    bottom_right = npa.flipud(
-        npa.fliplr(arr[1:, 1:])
+    top_right = anp.flipud(arr[1:, :])
+    bottom_left = anp.fliplr(arr[:, 1:])
+    bottom_right = anp.flipud(
+        anp.fliplr(arr[1:, 1:])
     )  # equivalent to flip, but flip is incompatible with autograd
 
-    return npa.concatenate(
+    return anp.concatenate(
         (
-            npa.concatenate((top_left, top, top_right)),
+            anp.concatenate((top_left, top, top_right)),
             middle,
-            npa.concatenate((bottom_left, bottom, bottom_right)),
+            anp.concatenate((bottom_left, bottom, bottom_right)),
         ),
         axis=1,
     )
 
 
-def _edge_pad(arr: np.ndarray, pad: np.ndarray) -> np.ndarray:
+def _edge_pad(arr: anp.ndarray, pad: anp.ndarray) -> anp.ndarray:
     """Border-pads the edges of an array.
 
     Used to preprocess the design weights prior to convolution with the filter.
@@ -89,30 +87,30 @@ def _edge_pad(arr: np.ndarray, pad: np.ndarray) -> np.ndarray:
         A 2d array with border padding.
     """
     # fill sides
-    left = npa.tile(arr[0, :], (pad[0][0], 1))
-    right = npa.tile(arr[-1, :], (pad[0][1], 1))
-    top = npa.tile(arr[:, 0], (pad[1][0], 1)).transpose()
-    bottom = npa.tile(arr[:, -1], (pad[1][1], 1)).transpose()
+    left = anp.tile(arr[0, :], (pad[0][0], 1))
+    right = anp.tile(arr[-1, :], (pad[0][1], 1))
+    top = anp.tile(arr[:, 0], (pad[1][0], 1)).transpose()
+    bottom = anp.tile(arr[:, -1], (pad[1][1], 1)).transpose()
 
     # fill corners
-    top_left = npa.tile(arr[0, 0], (pad[0][0], pad[1][0]))
-    top_right = npa.tile(arr[-1, 0], (pad[0][1], pad[1][0]))
-    bottom_left = npa.tile(arr[0, -1], (pad[0][0], pad[1][1]))
-    bottom_right = npa.tile(arr[-1, -1], (pad[0][1], pad[1][1]))
+    top_left = anp.tile(arr[0, 0], (pad[0][0], pad[1][0]))
+    top_right = anp.tile(arr[-1, 0], (pad[0][1], pad[1][0]))
+    bottom_left = anp.tile(arr[0, -1], (pad[0][0], pad[1][1]))
+    bottom_right = anp.tile(arr[-1, -1], (pad[0][1], pad[1][1]))
 
     if pad[0][0] > 0 and pad[0][1] > 0 and pad[1][0] > 0 and pad[1][1] > 0:
-        return npa.concatenate(
+        return anp.concatenate(
             (
-                npa.concatenate((top_left, top, top_right)),
-                npa.concatenate((left, arr, right)),
-                npa.concatenate((bottom_left, bottom, bottom_right)),
+                anp.concatenate((top_left, top, top_right)),
+                anp.concatenate((left, arr, right)),
+                anp.concatenate((bottom_left, bottom, bottom_right)),
             ),
             axis=1,
         )
     elif pad[0][0] == 0 and pad[0][1] == 0 and pad[1][0] > 0 and pad[1][1] > 0:
-        return npa.concatenate((top, arr, bottom), axis=1)
+        return anp.concatenate((top, arr, bottom), axis=1)
     elif pad[0][0] > 0 and pad[0][1] > 0 and pad[1][0] == 0 and pad[1][1] == 0:
-        return npa.concatenate((left, arr, right), axis=0)
+        return anp.concatenate((left, arr, right), axis=0)
     elif pad[0][0] == 0 and pad[0][1] == 0 and pad[1][0] == 0 and pad[1][1] == 0:
         return arr
     else:
@@ -120,8 +118,8 @@ def _edge_pad(arr: np.ndarray, pad: np.ndarray) -> np.ndarray:
 
 
 def convolve_design_weights_and_kernel(
-    x: np.ndarray, h: np.ndarray, periodic_axes: ArrayLikeType = None
-) -> np.ndarray:
+    x: anp.ndarray, h: anp.ndarray, periodic_axes: ArrayLikeType = None
+) -> anp.ndarray:
     """Convolves the design weights with the kernel.
 
     Uses a 2d FFT to perform the convolution operation. This approach is
@@ -141,26 +139,26 @@ def convolve_design_weights_and_kernel(
     (sx, sy) = x.shape
 
     if periodic_axes is None:
-        h = _quarter_to_full_kernel(h, 3 * np.array([sx, sy]))
+        h = _quarter_to_full_kernel(h, 3 * anp.array([sx, sy]))
         x = _edge_pad(x, ((sx, sx), (sy, sy)))
     else:
         (kx, ky) = h.shape
 
         npx = int(
-            np.ceil((2 * kx - 1) / sx)
+            anp.ceil((2 * kx - 1) / sx)
         )  # 2*kx-1 is the size of a complete kernel in the x direction
         npy = int(
-            np.ceil((2 * ky - 1) / sy)
+            anp.ceil((2 * ky - 1) / sy)
         )  # 2*ky-1 is the size of a complete kernel in the y direction
         if npx % 2 == 0:
             npx += 1  # Ensure npx is an odd number
         if npy % 2 == 0:
             npy += 1  # Ensure npy is an odd number
 
-        periodic_axes = np.array(periodic_axes)
+        periodic_axes = anp.array(periodic_axes)
         # Repeat the design pattern in periodic directions according to
         # the kernel size
-        x = npa.tile(
+        x = anp.tile(
             x, (npx if 0 in periodic_axes else 1, npy if 1 in periodic_axes else 1)
         )
 
@@ -171,16 +169,18 @@ def convolve_design_weights_and_kernel(
         )  # pad only in nonperiodic directions
         h = _quarter_to_full_kernel(
             h,
-            np.array([
-                npx * sx if 0 in periodic_axes else 3 * sx,
-                npy * sy if 1 in periodic_axes else 3 * sy,
-            ]),
+            anp.array(
+                [
+                    npx * sx if 0 in periodic_axes else 3 * sx,
+                    npy * sy if 1 in periodic_axes else 3 * sy,
+                ]
+            ),
         )
 
-    h = h / npa.sum(h)  # Normalize the kernel
+    h = h / anp.sum(h)  # Normalize the kernel
 
     return _centered(
-        npa.real(npa.fft.ifft2(npa.fft.fft2(x) * npa.fft.fft2(h))), (sx, sy)
+        anp.real(anp.fft.ifft2(anp.fft.fft2(x) * anp.fft.fft2(h))), (sx, sy)
     )
 
 
@@ -194,7 +194,7 @@ def _get_resolution(resolution: ArrayLikeType) -> tuple:
     Returns:
         A two-element tuple composed of the resolution in x and y directions.
     """
-    if isinstance(resolution, (tuple, list, np.ndarray)):
+    if isinstance(resolution, (tuple, list, anp.ndarray)):
         if len(resolution) == 2:
             return resolution
         elif len(resolution) == 1:
@@ -241,39 +241,39 @@ def mesh_grid(
             "The grid size is improper. Check the size and resolution of the design region."
         )
 
-    xv = np.arange(0, Lx / 2, 1 / resolution[0]) if resolution[0] > 0 else [0]
-    yv = np.arange(0, Ly / 2, 1 / resolution[1]) if resolution[1] > 0 else [0]
+    xv = anp.arange(0, Lx / 2, 1 / resolution[0]) if resolution[0] > 0 else [0]
+    yv = anp.arange(0, Ly / 2, 1 / resolution[1]) if resolution[1] > 0 else [0]
 
     # If the design weights are periodic in a direction,
     # the size of the kernel in that direction needs to be adjusted
     # according to the filter radius.
     if periodic_axes is not None:
-        periodic_axes = np.array(periodic_axes)
+        periodic_axes = anp.array(periodic_axes)
         if 0 in periodic_axes:
             xv = (
-                npa.arange(0, npa.ceil(2 * radius / Lx) * Lx / 2, 1 / resolution[0])
+                anp.arange(0, anp.ceil(2 * radius / Lx) * Lx / 2, 1 / resolution[0])
                 if resolution[0] > 0
                 else [0]
             )
         if 1 in periodic_axes:
             yv = (
-                npa.arange(0, npa.ceil(2 * radius / Ly) * Ly / 2, 1 / resolution[1])
+                anp.arange(0, anp.ceil(2 * radius / Ly) * Ly / 2, 1 / resolution[1])
                 if resolution[1] > 0
                 else [0]
             )
 
-    X, Y = np.meshgrid(xv, yv, sparse=True, indexing="ij")
+    X, Y = anp.meshgrid(xv, yv, sparse=True, indexing="ij")
     return Nx, Ny, X, Y
 
 
 def cylindrical_filter(
-    x: np.ndarray,
+    x: anp.ndarray,
     radius: float,
     Lx: float,
     Ly: float,
     resolution: ArrayLikeType,
     periodic_axes: ArrayLikeType = None,
-) -> np.ndarray:
+) -> anp.ndarray:
     """A cylindrical convolution filter.
 
     Typically allows for sharper features compared to other types of filters.
@@ -297,18 +297,18 @@ def cylindrical_filter(
     """
     Nx, Ny, X, Y = mesh_grid(radius, Lx, Ly, resolution, periodic_axes)
     x = x.reshape(Nx, Ny)  # Ensure the input is 2d
-    h = np.where(X**2 + Y**2 < radius**2, 1, 0)
+    h = anp.where(X**2 + Y**2 < radius**2, 1, 0)
     return convolve_design_weights_and_kernel(x, h, periodic_axes)
 
 
 def conic_filter(
-    x: np.ndarray,
+    x: anp.ndarray,
     radius: float,
     Lx: float,
     Ly: float,
     resolution: ArrayLikeType,
     periodic_axes: ArrayLikeType = None,
-) -> np.ndarray:
+) -> anp.ndarray:
     """A linear conic (or "hat") filter.
 
     Ref: B.S. Lazarov, F. Wang, & O. Sigmund, Length scale and
@@ -330,12 +330,12 @@ def conic_filter(
     """
     Nx, Ny, X, Y = mesh_grid(radius, Lx, Ly, resolution, periodic_axes)
     x = x.reshape(Nx, Ny)  # Ensure the input is 2d
-    h = npa.where(X**2 + Y**2 < radius**2, (1 - np.sqrt(abs(X**2 + Y**2)) / radius), 0)
+    h = anp.where(X**2 + Y**2 < radius**2, (1 - anp.sqrt(abs(X**2 + Y**2)) / radius), 0)
     return convolve_design_weights_and_kernel(x, h, periodic_axes)
 
 
 def gaussian_filter(
-    x: np.ndarray,
+    x: anp.ndarray,
     sigma: float,
     Lx: float,
     Ly: float,
@@ -363,12 +363,12 @@ def gaussian_filter(
     """
     Nx, Ny, X, Y = mesh_grid(3 * sigma, Lx, Ly, resolution, periodic_axes)
     x = x.reshape(Nx, Ny)  # Ensure the input is 2d
-    h = np.exp(-(X**2 + Y**2) / sigma**2)
+    h = anp.exp(-(X**2 + Y**2) / sigma**2)
     return convolve_design_weights_and_kernel(x, h, periodic_axes)
 
 
 def exponential_erosion(
-    x: np.ndarray,
+    x: anp.ndarray,
     radius: float,
     beta: float,
     Lx: float,
@@ -400,10 +400,10 @@ def exponential_erosion(
     Returns:
         The eroded design weights.
     """
-    x_hat = npa.exp(beta * (1 - x))
+    x_hat = anp.exp(beta * (1 - x))
     return (
         1
-        - npa.log(
+        - anp.log(
             cylindrical_filter(
                 x_hat, radius, Lx, Ly, resolution, periodic_axes
             ).flatten()
@@ -437,9 +437,9 @@ def exponential_dilation(x, radius, beta, Lx, Ly, resolution, periodic_axes=None
     Returns:
         The dilated design weights.
     """
-    x_hat = npa.exp(beta * x)
+    x_hat = anp.exp(beta * x)
     return (
-        npa.log(
+        anp.log(
             cylindrical_filter(
                 x_hat, radius, Lx, Ly, resolution, periodic_axes
             ).flatten()
@@ -481,7 +481,7 @@ def heaviside_erosion(x, radius, beta, Lx, Ly, resolution, periodic_axes=None):
     """
 
     x_hat = cylindrical_filter(x, radius, Lx, Ly, resolution, periodic_axes).flatten()
-    return npa.exp(-beta * (1 - x_hat)) + npa.exp(-beta) * (1 - x_hat)
+    return anp.exp(-beta * (1 - x_hat)) + anp.exp(-beta) * (1 - x_hat)
 
 
 def heaviside_dilation(x, radius, beta, Lx, Ly, resolution, periodic_axes=None):
@@ -517,7 +517,7 @@ def heaviside_dilation(x, radius, beta, Lx, Ly, resolution, periodic_axes=None):
     """
 
     x_hat = cylindrical_filter(x, radius, Lx, Ly, resolution, periodic_axes).flatten()
-    return 1 - npa.exp(-beta * x_hat) + npa.exp(-beta) * x_hat
+    return 1 - anp.exp(-beta * x_hat) + anp.exp(-beta) * x_hat
 
 
 def geometric_erosion(x, radius, alpha, Lx, Ly, resolution, periodic_axes=None):
@@ -550,9 +550,9 @@ def geometric_erosion(x, radius, alpha, Lx, Ly, resolution, periodic_axes=None):
     [1] Svanberg, K., & Svärd, H. (2013). Density filters for topology optimization based on the
     Pythagorean means. Structural and Multidisciplinary Optimization, 48(5), 859-875.
     """
-    x_hat = npa.log(x + alpha)
+    x_hat = anp.log(x + alpha)
     return (
-        npa.exp(
+        anp.exp(
             cylindrical_filter(x_hat, radius, Lx, Ly, resolution, periodic_axes)
         ).flatten()
         - alpha
@@ -590,9 +590,9 @@ def geometric_dilation(x, radius, alpha, Lx, Ly, resolution, periodic_axes=None)
     Pythagorean means. Structural and Multidisciplinary Optimization, 48(5), 859-875.
     """
 
-    x_hat = npa.log(1 - x + alpha)
+    x_hat = anp.log(1 - x + alpha)
     return (
-        -npa.exp(
+        -anp.exp(
             cylindrical_filter(x_hat, radius, Lx, Ly, resolution, periodic_axes)
         ).flatten()
         + alpha
@@ -679,7 +679,7 @@ def harmonic_dilation(x, radius, alpha, Lx, Ly, resolution, periodic_axes=None):
     )
 
 
-def tanh_projection(x: np.ndarray, beta: float, eta: float) -> np.ndarray:
+def tanh_projection(x: anp.ndarray, beta: float, eta: float) -> anp.ndarray:
     """Sigmoid projection filter.
 
     Ref: F. Wang, B. S. Lazarov, & O. Sigmund, On projection methods,
@@ -695,13 +695,13 @@ def tanh_projection(x: np.ndarray, beta: float, eta: float) -> np.ndarray:
     Returns:
         The filtered design weights.
     """
-    if beta == npa.inf:
+    if beta == anp.inf:
         # Note that backpropagating through here can produce NaNs. So we
         # manually specify the step function to keep the gradient clean.
-        return npa.where(x > eta, 1.0, 0.0)
+        return anp.where(x > eta, 1.0, 0.0)
     else:
-        return (npa.tanh(beta * eta) + npa.tanh(beta * (x - eta))) / (
-            npa.tanh(beta * eta) + npa.tanh(beta * (1 - eta))
+        return (anp.tanh(beta * eta) + anp.tanh(beta * (x - eta))) / (
+            anp.tanh(beta * eta) + anp.tanh(beta * (1 - eta))
         )
 
 
@@ -754,10 +754,10 @@ def smoothed_projection(
         >>> eta_i = 0.5; eta_e = 0.75
         >>> lengthscale = 0.1
         >>> filter_radius = get_conic_radius_from_eta_e(lengthscale, eta_e)
-        >>> Nx = onp.round(Lx * resolution) + 1
-        >>> Ny = onp.round(Ly * resolution) + 1
-        >>> rho = onp.random.rand(Nx, Ny)
-        >>> beta = npa.inf
+        >>> Nx = oanp.round(Lx * resolution) + 1
+        >>> Ny = oanp.round(Ly * resolution) + 1
+        >>> rho = oanp.random.rand(Nx, Ny)
+        >>> beta = aanp.inf
         >>> rho_filtered = conic_filter(rho, filter_radius, Lx, Ly, resolution)
         >>> rho_projected = smoothed_projection(rho_filtered, beta, eta_i, resolution)
     """
@@ -772,7 +772,7 @@ def smoothed_projection(
     # field, which will always be smooth and is the key to our approach. This
     # gradient essentially represents the normal direction pointing the the
     # nearest inteface.
-    rho_filtered_grad = npa.gradient(rho_filtered)
+    rho_filtered_grad = anp.gradient(rho_filtered)
     rho_filtered_grad_helper = (rho_filtered_grad[0] / dx) ** 2 + (
         rho_filtered_grad[1] / dy
     ) ** 2
@@ -783,12 +783,12 @@ def smoothed_projection(
     # need smoothings doesn't actually matter, since all our computations our
     # purely element-wise (no spatial locality) and those pixels will instead
     # rely on the standard projection. So just use 1, since it's well behaved.
-    nonzero_norm = npa.abs(rho_filtered_grad_helper) > 0
+    nonzero_norm = anp.abs(rho_filtered_grad_helper) > 0
 
-    rho_filtered_grad_norm = npa.sqrt(
-        npa.where(nonzero_norm, rho_filtered_grad_helper, 1)
+    rho_filtered_grad_norm = anp.sqrt(
+        anp.where(nonzero_norm, rho_filtered_grad_helper, 1)
     )
-    rho_filtered_grad_norm_eff = npa.where(nonzero_norm, rho_filtered_grad_norm, 1)
+    rho_filtered_grad_norm_eff = anp.where(nonzero_norm, rho_filtered_grad_norm, 1)
 
     # The distance for the center of the pixel to the nearest interface
     d = (eta - rho_filtered) / rho_filtered_grad_norm_eff
@@ -796,7 +796,7 @@ def smoothed_projection(
     # Only need smoothing if an interface lies within the voxel. Since d is
     # actually an "effective" d by this point, we need to ignore values that may
     # have been sanitized earlier on.
-    needs_smoothing = nonzero_norm & (npa.abs(d) < R_smoothing)
+    needs_smoothing = nonzero_norm & (anp.abs(d) < R_smoothing)
 
     # The fill factor is used to perform simple, first-order subpixel smoothing.
     # We use the (2D) analytic expression that comes when assuming the smoothing
@@ -806,11 +806,11 @@ def smoothed_projection(
     # with array-based AD tracers, apparently. See here:
     # https://github.com/google/jax/issues/1052#issuecomment-5140833520
     d_R = d / R_smoothing
-    F = npa.where(
+    F = anp.where(
         needs_smoothing, 0.5 - 15 / 16 * d_R + 5 / 8 * d_R**3 - 3 / 16 * d_R**5, 1.0
     )
     # F(-d)
-    F_minus = npa.where(
+    F_minus = anp.where(
         needs_smoothing, 0.5 + 15 / 16 * d_R - 5 / 8 * d_R**3 + 3 / 16 * d_R**5, 1.0
     )
 
@@ -828,7 +828,7 @@ def smoothed_projection(
     rho_projected_smoothed = (
         1 - F
     ) * rho_minus_eff_projected + F * rho_plus_eff_projected
-    return npa.where(
+    return anp.where(
         needs_smoothing,
         rho_projected_smoothed,
         rho_projected,
@@ -858,13 +858,13 @@ def heaviside_projection(x, beta, eta):
     density-based topology optimization. Archive of Applied Mechanics, 86(1-2), 189-218.
     """
 
-    case1 = eta * npa.exp(-beta * (eta - x) / eta) - (eta - x) * npa.exp(-beta)
+    case1 = eta * anp.exp(-beta * (eta - x) / eta) - (eta - x) * anp.exp(-beta)
     case2 = (
         1
-        - (1 - eta) * npa.exp(-beta * (x - eta) / (1 - eta))
-        - (eta - x) * npa.exp(-beta)
+        - (1 - eta) * anp.exp(-beta * (x - eta) / (1 - eta))
+        - (eta - x) * anp.exp(-beta)
     )
-    return npa.where(x < eta, case1, case2)
+    return anp.where(x < eta, case1, case2)
 
 
 """
@@ -972,9 +972,9 @@ def get_conic_radius_from_eta_e(b, eta_e):
     density-based topology optimization. Archive of Applied Mechanics, 86(1-2), 189-218.
     """
     if (eta_e >= 0.5) and (eta_e < 0.75):
-        return b / (2 * np.sqrt(eta_e - 0.5))
+        return b / (2 * anp.sqrt(eta_e - 0.5))
     elif (eta_e >= 0.75) and (eta_e <= 1):
-        return b / (2 - 2 * np.sqrt(1 - eta_e))
+        return b / (2 - 2 * anp.sqrt(1 - eta_e))
     else:
         raise ValueError(
             "The erosion threshold point (eta_e) must be between 0.5 and 1."
@@ -1005,34 +1005,34 @@ def length_indicator(x, filter_f, threshold_f, resolution, periodic_axes=None):
     geometric constraints. Computer Methods in Applied Mechanics and Engineering, 293, 266-282.
     """
 
-    filtered_field = npa.squeeze(filter_f(x))
+    filtered_field = anp.squeeze(filter_f(x))
     design_field = threshold_f(filtered_field)
     design_dim = filtered_field.ndim
     resolution = _get_resolution(resolution)
 
     if periodic_axes is None:
-        gradient_filtered_field = npa.gradient(filtered_field)
+        gradient_filtered_field = anp.gradient(filtered_field)
     else:
-        periodic_axes = np.array(periodic_axes)
+        periodic_axes = anp.array(periodic_axes)
         if 0 in periodic_axes:
             if design_dim == 2:
-                filtered_field = npa.tile(filtered_field, (3, 1))
+                filtered_field = anp.tile(filtered_field, (3, 1))
             if design_dim == 1 and resolution[0] > resolution[1]:
-                filtered_field = npa.tile(filtered_field, 3)
+                filtered_field = anp.tile(filtered_field, 3)
 
         if 1 in periodic_axes:
             if design_dim == 2:
-                filtered_field = npa.tile(filtered_field, (1, 3))
+                filtered_field = anp.tile(filtered_field, (1, 3))
             if design_dim == 1 and resolution[0] < resolution[1]:
-                filtered_field = npa.tile(filtered_field, 3)
+                filtered_field = anp.tile(filtered_field, 3)
 
         if design_dim == 2:
             gradient_filtered_field = _centered(
-                npa.array(npa.gradient(filtered_field)), (2,) + x.shape
+                anp.array(anp.gradient(filtered_field)), (2,) + x.shape
             )
         elif design_dim == 1:
             gradient_filtered_field = _centered(
-                npa.array(npa.gradient(filtered_field)), design_field.shape
+                anp.array(anp.gradient(filtered_field)), design_field.shape
             )
         else:
             raise ValueError(
@@ -1044,7 +1044,7 @@ def length_indicator(x, filter_f, threshold_f, resolution, periodic_axes=None):
             gradient_filtered_field[1] * resolution[1]
         ) ** 2
     else:
-        grad_mag = (npa.squeeze(gradient_filtered_field) * max(resolution)) ** 2
+        grad_mag = (anp.squeeze(gradient_filtered_field) * max(resolution)) ** 2
 
     if grad_mag.ndim not in (1, 2):
         raise ValueError(
@@ -1082,7 +1082,7 @@ def indicator_solid(x, c, filter_f, threshold_f, resolution, periodic_axes=None)
     design_field, grad_mag = length_indicator(
         x, filter_f, threshold_f, resolution, periodic_axes
     )
-    return design_field * npa.exp(-c * grad_mag)
+    return design_field * anp.exp(-c * grad_mag)
 
 
 def constraint_solid(
@@ -1130,7 +1130,7 @@ def constraint_solid(
         resolution,
         periodic_axes,
     ).flatten()
-    return npa.mean(I_s * npa.minimum(filtered_field.flatten() - eta_e, 0) ** 2)
+    return anp.mean(I_s * anp.minimum(filtered_field.flatten() - eta_e, 0) ** 2)
 
 
 def indicator_void(x, c, filter_f, threshold_f, resolution, periodic_axes=None):
@@ -1164,7 +1164,7 @@ def indicator_void(x, c, filter_f, threshold_f, resolution, periodic_axes=None):
     design_field, grad_mag = length_indicator(
         x, filter_f, threshold_f, resolution, periodic_axes
     )
-    return (1 - design_field) * npa.exp(-c * grad_mag)
+    return (1 - design_field) * anp.exp(-c * grad_mag)
 
 
 def constraint_void(x, c, eta_d, filter_f, threshold_f, resolution, periodic_axes=None):
@@ -1210,7 +1210,7 @@ def constraint_void(x, c, eta_d, filter_f, threshold_f, resolution, periodic_axe
         resolution,
         periodic_axes,
     ).flatten()
-    return npa.mean(I_v * npa.minimum(eta_d - filtered_field.flatten(), 0) ** 2)
+    return anp.mean(I_v * anp.minimum(eta_d - filtered_field.flatten(), 0) ** 2)
 
 
 def gray_indicator(x):
@@ -1233,4 +1233,4 @@ def gray_indicator(x):
     [1] Lazarov, B. S., Wang, F., & Sigmund, O. (2016). Length scale and manufacturability in
     density-based topology optimization. Archive of Applied Mechanics, 86(1-2), 189-218.
     """
-    return npa.mean(4 * x.flatten() * (1 - x.flatten())) * 100
+    return anp.mean(4 * x.flatten() * (1 - x.flatten())) * 100

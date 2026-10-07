@@ -17,9 +17,11 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import matplotlib.pyplot as plt
+
 from ..core.base_settings import OptimizationSettings
 from ..vendors.meep.filters import gaussian_filter  # type: ignore
 

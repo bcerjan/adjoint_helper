@@ -21,7 +21,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 
+import numpy as real_np
+
 from adjoint_helper.core.defs import ObjectiveReturn, combine_gradients_by_design_region
+from adjoint_helper.core.differentiation_defs import anp
 from adjoint_helper.core.pydantic_defs import SolverConfig
 from adjoint_helper.utils.logging_utils import setup_logger
 
@@ -34,10 +37,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Self
 
-import numpy as np
 import numpy.typing as npt
-from autograd import grad, tensor_jacobian_product
-from autograd import numpy as npa
+
+# from autograd import grad, tensor_jacobian_product
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -69,6 +71,8 @@ DEFAULT_BIASES: list[float] = [4, 8, 16, 24, 32, 40]
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_CENTERING = {"node", "cell"}
+
 
 class DesignRegion(BaseModel):
     """Class to store information about a single design region and to perform
@@ -78,6 +82,9 @@ class DesignRegion(BaseModel):
 
     `index_0` corresponds to the index when the weights are 0 (similarly for `index_1`).
     These are only needed by some of the optimization backends, so they are optional
+
+    `centering` is to determine if the underlying lattice is node- or cell-centered.
+    Meep is 'node' and FDTDx is 'cell'
     """
 
     model_config = ConfigDict(
@@ -90,8 +97,9 @@ class DesignRegion(BaseModel):
     index_0: Any = None
     index_1: Any = None
     connected_sides: list[Edge] = []
-    weights: WeightsType = np.array([])
+    weights: WeightsType = anp.array([])
     mask: MaskRegion | None = None
+    centering: str = "node"
     symmetry_func: Callable[[WeightsType], WeightsType] | None = Field(
         default=None,
         exclude=True,
@@ -104,7 +112,15 @@ class DesignRegion(BaseModel):
     @model_validator(mode="after")
     def create_weights(self) -> Self:
         if len(self.weights) == 0:
-            self.weights = np.ones((self.nx_design, self.ny_design)) * 0.5
+            self.weights = anp.ones((self.nx_design, self.ny_design)) * 0.5
+        return self
+
+    @model_validator(mode="after")
+    def check_centering(self) -> Self:
+        if self.centering not in ALLOWED_CENTERING:
+            raise ValueError(
+                f"Invalid centering parameter. Allowed choices are: {ALLOWED_CENTERING}"
+            )
         return self
 
     @computed_field
@@ -115,12 +131,22 @@ class DesignRegion(BaseModel):
     @computed_field
     @property
     def nx_design(self) -> int:
-        return round(self.x_size * self.resolution) + 1
+        if self.centering == "node":
+            return round(self.x_size * self.resolution) + 1
+        if self.centering == "cell":
+            return round(self.x_size * self.resolution)
+
+        raise ValueError("Somehow we got an invalid centering option.")
 
     @computed_field
     @property
     def ny_design(self) -> int:
-        return round(self.y_size * self.resolution) + 1
+        if self.centering == "node":
+            return round(self.y_size * self.resolution) + 1
+        if self.centering == "cell":
+            return round(self.y_size * self.resolution)
+
+        raise ValueError("Somehow we got an invalid centering option.")
 
     @computed_field
     @property
@@ -134,28 +160,40 @@ class DesignRegion(BaseModel):
         return self.weights.flatten()
 
     def apply_mask(self, weights: WeightsType | None = None) -> WeightsType:
+        is_functional_call = weights is not None
         if self.mask is not None:
-            if weights is None:
-                weights = self.weights
-                # self.weights[self.mask.locations] = self.mask.value
-            weights[self.mask.locations] = self.mask.value
-            self.weights = weights
-        return self.weights
+            input_weights = weights if is_functional_call else self.weights
+            masked_weights = anp.where(
+                self.mask.locations, self.mask.value, input_weights
+            )
+
+            if not is_functional_call:
+                self.weights = masked_weights
+            return masked_weights
+
+        return weights if is_functional_call else self.weights
 
     def apply_symmetry(self, weights: WeightsType | None = None) -> WeightsType:
         """If this design region should have some kind of enforced
         symmetry, specify how to apply that here. Note that for
         most operations, numpy uses the 'wrong' direction for things,
         so e.g. if you have a left-right symmetry you specify that using
-        np.flipud instead of 'lr'"""
+        anp.flipud instead of 'lr'"""
+        # We need to separate calls from inside differentiation
+        # based on if we supplied external weights to use
+        is_functional_call = weights is not None
         if self.symmetry_func is not None:
-            self.weights[:, :] = self.symmetry_func(
-                self.weights if weights is None else weights
-            )
-        return self.weights
+            input_weights = weights if is_functional_call else self.weights
+            symmetric_weights = self.symmetry_func(input_weights)
+
+            if not is_functional_call:
+                self.weights = symmetric_weights
+            return symmetric_weights
+
+        return weights if is_functional_call else self.weights
 
     def unflatten_array(self, arr: RawWeightsType) -> WeightsType:
-        return np.reshape(arr, (self.nx_design, self.ny_design))
+        return anp.reshape(arr, (self.nx_design, self.ny_design))
 
     def filter_and_project(
         self, optimization: OptimizationSettings, weights: WeightsType | None = None
@@ -165,12 +203,16 @@ class DesignRegion(BaseModel):
         # in this class so you could (in theory) customize per design
         # region. Would also need to move constraints into this class as
         # methods.
-        pure_weights = npa.array(weights if weights is not None else self.weights)
+        pure_weights = anp.array(weights if weights is not None else self.weights)
         weights_filtered = conic_filter(
             pure_weights,
             optimization.filter_radius,
-            self.x_size,
-            self.y_size,
+            self.x_size
+            if self.centering == "node"
+            else self.x_size - 1 / self.resolution,
+            self.y_size
+            if self.centering == "node"
+            else self.x_size - 1 / self.resolution,
             [self.resolution],
         )
 
@@ -209,11 +251,11 @@ class DesignRegion(BaseModel):
                 temp = self.symmetry_func(temp)
 
             if self.mask is not None:
-                temp[self.mask.locations] = self.mask.value
+                temp = self.apply_mask(temp)
 
             return temp
 
-        out = tensor_jacobian_product(_combined_func, 0)(
+        out = anp.tensor_jacobian_product(_combined_func, 0)(
             self.weights, self.unflatten_array(gradient)
         )
         gradient[:] = out.flatten()
@@ -225,7 +267,7 @@ class DesignRegion(BaseModel):
     ) -> ConstraintReturnType:
         """Constraint function for the minimum line width and spacing.
            If the abs(max(grad)) < optimization.line_width_tol and
-           npa.linalg.norm(grad) < optimization.line_width_tol the results
+           aanp.linalg.norm(grad) < optimization.line_width_tol the results
            are discarded to prevent stalls in the optimization process.
 
         Args:
@@ -244,8 +286,8 @@ class DesignRegion(BaseModel):
         c0 = 1e6 * (optimization.filter_radius * 1 / resolution) ** 4
 
         def filter_func(
-            a: npt.NDArray[np.float64],
-        ) -> npt.NDArray[np.float64]:
+            a: npt.NDArray[anp.float64],
+        ) -> npt.NDArray[anp.float64]:
             return conic_filter(  # type: ignore
                 x=a,
                 radius=optimization.filter_radius,
@@ -255,18 +297,18 @@ class DesignRegion(BaseModel):
             )
 
         def threshold_func(
-            a: npt.NDArray[np.float64],
-        ) -> npt.NDArray[np.float64]:
+            a: npt.NDArray[anp.float64],
+        ) -> npt.NDArray[anp.float64]:
             return tanh_projection(  # type: ignore
                 a, optimization.sigmoid_bias, optimization.sigmoid_threshold
             )
 
-        def M1(a: npt.NDArray[np.float64]) -> float:
+        def M1(a: npt.NDArray[anp.float64]) -> float:
             return constraint_solid(  # type: ignore
                 a, c0, optimization.sigmoid_erosion, filter_func, threshold_func, [0, 1]
             )
 
-        def M2(a: npt.NDArray[np.float64]) -> float:
+        def M2(a: npt.NDArray[anp.float64]) -> float:
             return constraint_void(  # type: ignore
                 a,
                 c0,
@@ -276,12 +318,12 @@ class DesignRegion(BaseModel):
                 [0, 1],
             )
 
-        g1 = grad(M1, 0)(self.weights)  # type: ignore
-        g2 = grad(M2, 0)(self.weights)  # type: ignore
+        g1 = anp.grad(M1, 0)(self.weights)  # type: ignore
+        g2 = anp.grad(M2, 0)(self.weights)  # type: ignore
 
         t1 = (M1(self.weights) - b1) / a1
         t2 = (M2(self.weights) - b1) / a1
-        max = npa.max([t1, t2])  # type: ignore
+        max = anp.max([t1, t2])  # type: ignore
 
         if max == t1:
             gradi = g1
@@ -309,12 +351,12 @@ class DesignRegion(BaseModel):
         """
 
         if not self.do_connectivity:
-            return (0, np.zeros(self.weights.flatten().shape))
+            return (0, anp.zeros(self.weights.flatten().shape))
 
         proj = self.filter_and_project(optimization=optimization)
 
-        aggT = np.ones_like(proj) * np.inf
-        aggGrad = np.zeros_like(proj)
+        aggT = anp.ones_like(proj) * anp.inf
+        aggGrad = anp.zeros_like(proj)
 
         # These are the hyperparameters for our connectivity constraint. Maybe
         # should be moved into OptimizationSettings
@@ -328,7 +370,7 @@ class DesignRegion(BaseModel):
         # largest dJ_du for that location
         # for i in range(0,4):
         for i in self.connected_sides:
-            rot = npa.rot90(proj, i.value).flatten()  # type: ignore
+            rot = anp.rot90(proj, i.value).flatten()  # type: ignore
             T, _, dJ_du = constraint_connectivity(  # type: ignore
                 rot,  # type: ignore
                 self.nx_design,
@@ -340,24 +382,24 @@ class DesignRegion(BaseModel):
             )
 
             # Need to un-rotate to preserve orientation
-            # T = npa.rot90(T.reshape(settings.nx_design, settings.ny_design), -i)
-            # dJ_du = npa.rot90(dJ_du.reshape(settings.nx_design, settings.ny_design), -i)
+            # T = aanp.rot90(T.reshape(settings.nx_design, settings.ny_design), -i)
+            # dJ_du = aanp.rot90(dJ_du.reshape(settings.nx_design, settings.ny_design), -i)
             T = T.reshape(self.nx_design, self.ny_design)  # type: ignore
             dJ_du = dJ_du.reshape(self.nx_design, self.ny_design)  # type: ignore
 
             cond = T < aggT  # type: ignore
-            aggT = npa.where(cond, T, aggT)  # type: ignore
-            aggGrad = npa.where(cond, dJ_du, aggGrad)  # type: ignore
+            aggT = anp.where(cond, T, aggT)  # type: ignore
+            aggGrad = anp.where(cond, dJ_du, aggGrad)  # type: ignore
 
         # This is copied from the mpa.constraint_connectivity code as we need the
         # FOM for our assembled temperature, not raw temp from any rotation or
         # combination of rotations
-        def heat_func(x: npt.NDArray[np.float64]) -> float:
-            return npa.sum(x**p) ** (1 / p) / thresh  # type: ignore
+        def heat_func(x: npt.NDArray[anp.float64]) -> float:
+            return anp.sum(x**p) ** (1 / p) / thresh  # type: ignore
 
         f0 = heat_func(aggT) - 1  # type: ignore
 
-        aggGrad = npa.squeeze(aggGrad)  # type: ignore
+        aggGrad = anp.squeeze(aggGrad)  # type: ignore
 
         temp = self.backpropagate(gradient=aggGrad, optimization=optimization)
 
@@ -377,10 +419,10 @@ class DesignRegion(BaseModel):
 
     def binarize_weights(self, optimization: OptimizationSettings) -> WeightsType:
         bias = optimization.sigmoid_bias
-        optimization.sigmoid_bias = np.inf
+        optimization.sigmoid_bias = anp.inf
         ret = self.filter_and_project(optimization=optimization)
 
-        ret[:, :] = np.where(ret >= 0.5, 1, 0)
+        ret[:, :] = anp.where(ret >= 0.5, 1, 0)
         optimization.sigmoid_bias = bias
         return ret
 
@@ -396,9 +438,9 @@ class DesignRegion(BaseModel):
             else self.filter_and_project(optimization=optimization)
         )
 
-        np.savetxt(
+        real_np.savetxt(
             fpath,
-            w,
+            real_np.asarray(w),
             fmt="%4.2f",
             delimiter=",",
         )
@@ -418,7 +460,7 @@ class SimulationSettings(BaseModel, ABC):
     n_objective_functions: int = 1
     design_regions: list[DesignRegion]
     resolution: int
-    baseline_optimization_value: float | list[float] = -np.inf
+    baseline_optimization_value: float | list[float] = -anp.inf
     needs_baseline: bool = True
     enforce_symmetry: bool = False
     history_fname: str
@@ -539,10 +581,11 @@ class SimulationSettings(BaseModel, ABC):
             self.needs_baseline = False
 
     def get_empty_grads(self) -> list[list[list[RawWeightsType]]]:
+        typ = anp.float64 if anp.backend == "autograd" else anp.float32
         return [
             [
                 [
-                    np.zeros(r.total_n, dtype=np.float64)
+                    anp.zeros(r.total_n, dtype=typ)
                     for _ in range(self.n_design_parameters)
                 ]
                 for _ in range(self.n_objective_functions)
@@ -598,7 +641,15 @@ class SimulationSettings(BaseModel, ABC):
             )
 
         for i, r in enumerate(self.design_regions):
-            r.weights[:, :] = new_weights[i]
+            if anp.backend == "jax":
+                r.weights = r.weights.at[:, :].set(new_weights[i])
+                return
+
+            if anp.backend == "autograd":
+                r.weights[:, :] = new_weights[i]
+                return
+
+            raise ValueError("Error when setting weights, backend not found")
 
     def vector_to_arrays(self, vec: RawWeightsType) -> list[WeightsType]:
         """Split the vector into pieces for each design region"""
@@ -612,7 +663,7 @@ class SimulationSettings(BaseModel, ABC):
         return ret
 
     def arrays_to_vector(self, arrays: list[WeightsType]) -> RawWeightsType:
-        ret = np.zeros(self.total_n(), dtype=arrays[-1].dtype)
+        ret = anp.zeros(self.total_n(), dtype=arrays[-1].dtype)
         start = 0
         stop = 0
         for w in arrays:
@@ -642,7 +693,7 @@ class SimulationSettings(BaseModel, ABC):
     def line_width_and_spacing(
         self, optimization: OptimizationSettings
     ) -> ConstraintReturnType:
-        grads = np.zeros(self.total_n())
+        grads = anp.zeros(self.total_n())
         val = 0  # TODO: possibly make this a list. Or use inequality constraints
         # to enforce the rules for multiple design regions...
         start = 0
@@ -659,7 +710,7 @@ class SimulationSettings(BaseModel, ABC):
     def connectivity_constraint(
         self, optimization: OptimizationSettings
     ) -> ConstraintReturnType:
-        grads = np.zeros(self.total_n())
+        grads = anp.zeros(self.total_n())
         val = 0  # TODO: possibly make this a list. Or use inequality constraints
         # to enforce the rules for multiple design regions...
         start = 0
@@ -806,7 +857,7 @@ class OptimizationSettings(BaseModel, ABC):
     fom: list[float] = []
     data: list[float] = []
     weights: list[list[WeightsType]] = Field(default_factory=list)  # type: ignore
-    grad: list[np.float64] = []
+    grad: list[anp.float64] = []
     connectivity: list[float] = []
     sigmoid_threshold: float = 0.5
     sigmoid_erosion: float = 0.65
@@ -887,7 +938,7 @@ class OptimizationSettings(BaseModel, ABC):
     @computed_field
     @property
     def total_iterations(self) -> int:
-        return int(np.sum(self.max_evals))
+        return int(real_np.sum(self.max_evals))
 
     @computed_field
     @property
@@ -1005,9 +1056,20 @@ def _(
 
         for dr_i, obj_func, param, r in settings.design_space:
             r.backpropagate(dJ_du[dr_i][obj_func][param], optimization=optimization)
-            temp_grads[dr_i][obj_func][param][:] = dJ_du[dr_i][obj_func][param]
+            if anp.backend == "jax":
+                temp_grads[dr_i][obj_func][param] = (
+                    temp_grads[dr_i][obj_func][param]
+                    .at[:]
+                    .set(dJ_du[dr_i][obj_func][param])
+                )
+            if anp.backend == "autograd":
+                temp_grads[dr_i][obj_func][param][:] = dJ_du[dr_i][obj_func][param]
+            if anp.backend != "jax" and anp.backend != "autograd":
+                raise ValueError(
+                    "Disallowed differentiation engine in registered objective"
+                )
         grad_out = combine_gradients_by_design_region(temp_grads, operation="sum")
-        vec_out = np.concatenate(grad_out)
+        vec_out = anp.concatenate(grad_out)
 
         logger.info(
             f"iteration: {len(optimization.data) + 1}, "
@@ -1015,7 +1077,7 @@ def _(
             f"obj. value: {obj_val}"
         )
 
-        obj_val = np.sum(obj_val)
+        obj_val = anp.sum(anp.array(obj_val))
 
         return [obj_val], vec_out
 

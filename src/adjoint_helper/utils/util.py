@@ -19,12 +19,17 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 
-from adjoint_helper.core.defs import OptimizationFunction
-
-from ..core.base_settings import OptimizationSettings, SimulationSettings
+from ..core.base_settings import OptimizationSettings
 from ..core.optimization_history import OptimizationHistory
 from .logging_utils import am_mpi_master
+
+
+def unbox_array(arr):
+    extractor = np.vectorize(lambda x: x._value if hasattr(x, "_value") else x)
+
+    return extractor(arr).astype(float)
 
 
 def save_output(
@@ -63,6 +68,10 @@ def save_output(
     # Probably?
     if am_mpi_master():
         for i, w in enumerate(s_weights):
+            # print(f"w type: {type(w)}")
+            # w = unbox_array(w)
+            # print(f"w type after: {type(w)}")
+            # print(w[0][0:15])
             fig, ax = plt.subplots()  # type: ignore
             ax.imshow(  # type: ignore
                 w.T,

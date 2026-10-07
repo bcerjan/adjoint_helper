@@ -1,15 +1,14 @@
 import numpy as np
+from scipy.sparse import csc_matrix, diags, eye, kron
 from scipy.sparse.linalg import cg, spsolve
-from scipy.sparse import kron, diags, csr_matrix, eye, csc_matrix
-from autograd import numpy as npa
-from autograd import grad
-from typing import List
+
+from adjoint_helper.core.differentiation_defs import anp
 
 solvers = [spsolve, cg]
 
 
 def constraint_connectivity(
-    rho: List[float] = None,
+    rho: list[float] = None,
     nx: int = None,
     ny: int = None,
     nz: int = None,
@@ -105,13 +104,13 @@ def constraint_connectivity(
     else:
         T, info = (solver(eq, src)).reshape(1, -1)
 
-    heat_func = lambda x: npa.sum(x**p) ** (1 / p) / thresh
+    heat_func = lambda x: anp.sum(x**p) ** (1 / p) / thresh
     # Instead of constraining heat - threshold <= 0, we are constraining heat/threshold - 1 <= 0
     heat_constraint = heat_func(T) - 1
     if not need_grad:
         return heat_constraint
 
-    dgdx = grad(heat_func)(T)
+    dgdx = anp.grad(heat_func)(T)
     if solver == spsolve:
         aT = (solver(eq, dgdx)).reshape(1, -1)
     else:

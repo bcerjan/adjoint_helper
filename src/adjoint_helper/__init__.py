@@ -29,6 +29,7 @@ from .core.defs import (
     OptimizationFunction,
     SimulationReturn,
 )
+from .core.differentiation_defs import anp
 from .core.optimization_history import OptimizationHistory
 from .utils.util import save_fom_history, save_output
 from .utils.normalization_functions import normalize_meep_output

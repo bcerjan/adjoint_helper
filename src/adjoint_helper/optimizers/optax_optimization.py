@@ -20,10 +20,11 @@ __all__ = ["OptaxOptimizationSettings"]
 
 from typing import Annotated, Any
 
-import numpy as np
+import numpy as real_np
 import optax  # type: ignore
 from pydantic import Field, model_validator
 
+from adjoint_helper.core.differentiation_defs import anp
 from adjoint_helper.core.pydantic_defs import SolverConfig
 
 from ..core.base_settings import (
@@ -71,7 +72,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
             n = data.get("total_evals", 40)  # type: ignore
 
             if isinstance(n, int):
-                data["max_evals"] = np.ones(n, dtype=np.int32).tolist()
+                data["max_evals"] = anp.ones(n, dtype=anp.int32).tolist()
 
                 if isinstance(init, (float, int)) and isinstance(scale, (float, int)):
                     data["sigmoid_biases"] = [init * scale**i for i in range(n)]
@@ -107,7 +108,9 @@ class OptaxOptimizationSettings(OptimizationSettings):
                 obj += fabrication * self.linewidth_penalty
 
         self.fom.append(obj)
-        self.weights.append(self.simulation_settings.vector_to_arrays(weights))
+        self.weights.append(
+            self.simulation_settings.vector_to_arrays(real_np.asarray(weights))
+        )
         save_output(optimization=self, sigmoid_bias=self.sigmoid_bias)
 
         return [obj], grad
@@ -121,11 +124,11 @@ class OptaxOptimizationSettings(OptimizationSettings):
         self.simulation_settings.calculate_normalization()
 
         # Initial design weights (arbitrary constant value).
-        weights: RawWeightsType = np.concatenate(self.simulation_settings.weights_raw)
+        weights: RawWeightsType = anp.concatenate(self.simulation_settings.weights_raw)
 
         self.simulation_settings.apply_masks()
 
-        optimal_design_weights = np.zeros_like(weights)
+        optimal_design_weights = anp.zeros_like(weights)
 
         # Handle restarting:
         _, last_index = self._current_bias_and_index()
@@ -150,7 +153,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
                 self.simulation_settings.apply_masks()
                 self.simulation_settings.apply_symmetry()
-                weights[:] = np.clip(weights, 0.0, 1.0)
+                weights[:] = anp.clip(weights, 0.0, 1.0)
 
         optimal_design_weights = self.simulation_settings.filter_and_project(
             optimization=self

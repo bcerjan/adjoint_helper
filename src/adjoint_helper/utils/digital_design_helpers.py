@@ -23,14 +23,14 @@ can be reused in other examples.
 """
 import logging
 
-import numpy as np
+from adjoint_helper import anp
 
 logger = logging.getLogger(__name__)
 
 
 def digital_circle(
     x_size: int, y_size: int, rad: int
-) -> np.ndarray[tuple[int, int], np.dtype[np.float64]]:
+) -> anp.ndarray[tuple[int, int], anp.dtype[anp.float64]]:
     """Returns an array with ones everywhere except for a circular region
     in the middle where it is zero. Radius is specified in grid units."""
 
@@ -47,11 +47,11 @@ def digital_circle(
             "Design unit Y size is even so the center will be off by one pixel"
         )
 
-    out = np.ones((x_size, y_size))
+    out = anp.ones((x_size, y_size))
 
     x_cent = x_size // 2
     y_cent = y_size // 2
-    y, x = np.ogrid[:x_size, :y_size]
+    y, x = anp.ogrid[:x_size, :y_size]
 
     mask = (x - x_cent) ** 2 + (y - y_cent) ** 2 <= rad**2
 

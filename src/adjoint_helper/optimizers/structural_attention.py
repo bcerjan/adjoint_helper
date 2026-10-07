@@ -21,9 +21,10 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Any, Self, TypeVar
 
-import numpy as np
+import numpy as real_np
 from pydantic import ConfigDict, Field, computed_field, model_validator
 
+from adjoint_helper.core.differentiation_defs import anp
 from adjoint_helper.core.pydantic_defs import SolverConfig
 
 from ..core.base_settings import (
@@ -32,7 +33,6 @@ from ..core.base_settings import (
     SimulationSettings,
 )
 from ..core.defs import (
-    RawWeightsType,
     WeightsType,
 )
 from ..core.pydantic_defs import IntArray2D
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BIAS = [128.0]
 
-DType = TypeVar("DType", bound=np.number)
+DType = TypeVar("DType", bound=anp.number)
 
 
 class StructuralAttentionDesignRegion(DesignRegion):
@@ -51,7 +51,7 @@ class StructuralAttentionDesignRegion(DesignRegion):
     )
 
     design_units: list[WeightsType]
-    design_unit_weights: IntArray2D = np.array([], dtype=int)
+    design_unit_weights: IntArray2D = anp.array([], dtype=int)
 
     @model_validator(mode="after")
     def _check_index_vals(self) -> Self:
@@ -87,7 +87,7 @@ class StructuralAttentionDesignRegion(DesignRegion):
         x_units = self.nx_design // self.design_unit_x
         y_units = self.ny_design // self.design_unit_y
 
-        out = np.zeros_like(self.weights)
+        out = anp.zeros_like(self.weights)
         x_step = self.design_unit_x
         y_step = self.design_unit_y
         for x in range(x_units):
@@ -122,7 +122,7 @@ class StructuralAttentionDesignRegion(DesignRegion):
         if self.design_unit_weights.size == 0:
             x = self.nx_design // self.design_unit_x
             y = self.ny_design // self.design_unit_y
-            self.design_unit_weights = np.random.randint(
+            self.design_unit_weights = anp.random.randint(
                 0,
                 len(self.design_units),
                 size=(x, y),
@@ -162,20 +162,20 @@ class StructuralAttentionDesignRegion(DesignRegion):
     def get_design_region_in_design_units(self) -> WeightsType:
         (num_x, num_y) = self.get_size_in_design_units
 
-        out = np.zeros((num_x, num_y))
+        out = anp.zeros((num_x, num_y))
         return out
 
     def _apply_func_over_design_units(
         self,
-        arr: np.ndarray[tuple[int, int], np.dtype[DType]],
-        func: Callable[[np.ndarray[tuple[int, int], np.dtype[DType]]], float],
-    ) -> np.ndarray[tuple[int, int], np.dtype[DType]]:
+        arr: anp.ndarray[tuple[int, int], anp.dtype[DType]],
+        func: Callable[[anp.ndarray[tuple[int, int], anp.dtype[DType]]], float],
+    ) -> anp.ndarray[tuple[int, int], anp.dtype[DType]]:
         """This function reduces a full-size input (arr) to the
         size of the design region in design units. E.g. a 100 x 100 weights
         with design units of size 10 would produce a 10x10 output."""
         (x_size, y_size) = self.get_size_in_design_units
         x_step, y_step = self.design_unit_x, self.design_unit_y
-        out = np.zeros((x_size, y_size), dtype=arr.dtype)
+        out = anp.zeros((x_size, y_size), dtype=arr.dtype)
         for x in range(x_size):
             x_idx = x * x_step
             x_stop = x_idx + x_step
@@ -187,16 +187,16 @@ class StructuralAttentionDesignRegion(DesignRegion):
         return out
 
     def _get_current_discrete_state(
-        self, design_unit_weights: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
+        self, design_unit_weights: anp.ndarray
+    ) -> tuple[anp.ndarray, anp.ndarray]:
         """Maps the continuous weights to the nearest discrete state index and values."""
-        current_states_idx = np.zeros_like(design_unit_weights, dtype=np.int32)
+        current_states_idx = anp.zeros_like(design_unit_weights, dtype=anp.int32)
         for i in range(design_unit_weights.shape[0]):
             for j in range(design_unit_weights.shape[1]):
                 diffs = [abs(design_unit_weights[i, j] - s) for s in self.design_units]
-                current_states_idx[i, j] = np.argmin(diffs)
+                current_states_idx[i, j] = anp.argmin(diffs)
 
-        current_discrete_vals = np.array(
+        current_discrete_vals = anp.array(
             [
                 [
                     self.design_units[current_states_idx[i, j]]
@@ -225,23 +225,23 @@ class StructuralAttentionDesignRegion(DesignRegion):
         d_max_list: list[int] = []
 
         def _internal_func(
-            combined: np.ndarray[tuple[int, int], np.dtype[DType]],
+            combined: anp.ndarray[tuple[int, int], anp.dtype[DType]],
         ) -> float:
-            s_max = -np.inf
+            s_max = -anp.inf
             d_max = -10000000
-            grad = np.imag(combined)
-            weights = np.real(combined)
+            grad = anp.imag(combined)
+            weights = anp.real(combined)
             for idx, s in enumerate(self.design_units):
                 s_n = self._weights_to_index(s)
                 w_n = self._weights_to_index(weights)
                 delta_n = s_n - w_n
-                max_delta_n: float = np.max(np.abs(delta_n))
+                max_delta_n: float = anp.max(anp.abs(delta_n))
                 q_norm = (
                     delta_n / max_delta_n
-                    if not np.isclose(0, max_delta_n)
-                    else np.zeros_like(delta_n)
+                    if not anp.isclose(0, max_delta_n)
+                    else anp.zeros_like(delta_n)
                 )
-                s_d = np.vdot(q_norm, grad)
+                s_d = anp.vdot(q_norm, grad)
                 if s_d > s_max:
                     s_max = s_d
                     d_max = idx
@@ -256,12 +256,12 @@ class StructuralAttentionDesignRegion(DesignRegion):
             func=_internal_func,
         )
 
-        return np.real(output), d_max_list
+        return anp.real(output), d_max_list
 
     def _update_weights_at_design_unit(
         self,
-        i: int | np.integer,
-        j: int | np.integer,
+        i: int | anp.integer,
+        j: int | anp.integer,
         design_unit_idx: int,
     ) -> WeightsType:
         """Update weights in-place for this design region at the location of this design unit
@@ -280,7 +280,7 @@ class StructuralAttentionDesignRegion(DesignRegion):
         ]
         self.design_unit_weights[i, j] = design_unit_idx
 
-        out = np.zeros_like(self.weights)
+        out = anp.zeros_like(self.weights)
         out[x_start:x_stop, y_start:y_stop] = 1
         return out
 
@@ -402,7 +402,7 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
 
         # Initialize path-integral attribution maps (one per design region) to 0
         self.attribution_maps = [
-            np.zeros_like(r.weights) for r in self.simulation_settings.design_regions
+            anp.zeros_like(r.weights) for r in self.simulation_settings.design_regions
         ]
 
         total_iters = self.max_evals[0]
@@ -415,15 +415,15 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
             # Get the objective function
             opt = self.simulation_settings.get_objective(self)
 
-            weights = np.concatenate(self.simulation_settings.weights_raw)
+            weights = anp.concatenate(self.simulation_settings.weights_raw)
 
             # Evaluate FOM and gradients
             [fom_orig], grad = opt(weights)
-            fom: float = np.clip(fom_orig, 0, 1)
-            if np.any(fom != fom_orig):
+            fom: float = anp.clip(fom_orig, 0, 1)
+            if anp.any(fom != fom_orig):
                 logger.warning(
                     "Clipping was required to bring FOM within [0,1]."
-                    f" Max was: {np.max(fom_orig)} and min was: {np.min(fom_orig)}"
+                    f" Max was: {anp.max(fom_orig)} and min was: {anp.min(fom_orig)}"
                 )
 
             # Invert to account for minimization:
@@ -432,7 +432,9 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
 
             self.fom.append(fom)
             self.weights.append(
-                self.simulation_settings.vector_to_arrays(weights.copy())
+                self.simulation_settings.vector_to_arrays(
+                    real_np.asarray(weights)
+                )  # needs .copy?
             )
 
             save_output(optimization=self, sigmoid_bias=self.sigmoid_bias)
@@ -452,32 +454,32 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
                 # TODO: Check if we need to ignore masked regions -- in theory yes,
                 # but that requires that the masked region takes up an entire design
                 # unit, which seems unlikely.
-                denominator = np.max(s_big) - np.min(s_big)
+                denominator = anp.max(s_big) - anp.min(s_big)
                 a_big = (
-                    (s_big - np.min(s_big)) / denominator
-                    if denominator is not np.isclose(0, denominator, atol=1e-9)
-                    else np.zeros_like(s_big)
+                    (s_big - anp.min(s_big)) / denominator
+                    if denominator is not anp.isclose(0, denominator, atol=1e-9)
+                    else anp.zeros_like(s_big)
                 )
                 # TODO: Figure out where the typo(s?) are in the supplementary information.
                 # Their code and text description don't agree on how p_big is defined. I think
                 # what they want is tanh(beta * abs(a)) but it is super unclear given what they
                 # actually wrote.
-                p_big = np.tanh(self.beta * np.abs(a_big))  # type: ignore
+                p_big = anp.tanh(self.beta * anp.abs(a_big))  # type: ignore
 
-                r_mat = np.random.uniform(size=p_big.shape)
-                p_big = np.where(p_big < r_mat, 0, p_big)
+                r_mat = anp.random.uniform(size=p_big.shape)
+                p_big = anp.where(p_big < r_mat, 0, p_big)
 
                 size_x, size_y = ddr.get_size_in_design_units
                 alpha = self.update_fraction * (1 - fom_best)
 
-                n_selected = int(np.ceil(size_x * size_y * alpha))
+                n_selected = int(anp.ceil(size_x * size_y * alpha))
 
-                partition_idxs = np.argpartition(np.ravel(p_big), kth=-n_selected)[
+                partition_idxs = anp.argpartition(anp.ravel(p_big), kth=-n_selected)[
                     -n_selected:
                 ]
 
                 for idx in partition_idxs:
-                    i, j = np.unravel_index(idx, s_big.shape)
+                    i, j = anp.unravel_index(idx, s_big.shape)
                     attribution = ddr._update_weights_at_design_unit(
                         i=i,
                         j=j,

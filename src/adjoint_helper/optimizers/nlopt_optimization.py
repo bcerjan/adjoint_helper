@@ -21,9 +21,10 @@ __all__ = ["NloptOptimizationSettings"]
 import logging
 
 import nlopt  # type: ignore
-import numpy as np
+import numpy as real_np
 from pydantic import Field, computed_field
 
+from adjoint_helper.core.differentiation_defs import anp
 from adjoint_helper.core.pydantic_defs import SolverConfig
 
 from ..core.base_settings import (
@@ -135,7 +136,9 @@ class NloptOptimizationSettings(OptimizationSettings):
             grad[:] = vec_out
 
         self.fom.append(obj)
-        self.weights.append(self.simulation_settings.vector_to_arrays(weights.copy()))
+        self.weights.append(
+            self.simulation_settings.vector_to_arrays(real_np.asarray(weights.copy()))
+        )
         save_output(self, self.sigmoid_bias)
 
         return obj
@@ -148,14 +151,14 @@ class NloptOptimizationSettings(OptimizationSettings):
             optimization (OptimizationSettings): Optimization settings
 
         Returns:
-            npt.NDArray[np.float64]: Optimal weights after the optimization
+            npt.NDArray[anp.float64]: Optimal weights after the optimization
         """
 
         self.simulation_settings.calculate_normalization()
 
-        lb = np.zeros(self.simulation_settings.total_n())
-        ub = np.ones(self.simulation_settings.total_n())
-        weights: RawWeightsType = np.concatenate(self.simulation_settings.weights_raw)
+        lb = anp.zeros(self.simulation_settings.total_n())
+        ub = anp.ones(self.simulation_settings.total_n())
+        weights: RawWeightsType = anp.concatenate(self.simulation_settings.weights_raw)
 
         self.simulation_settings.apply_masks()
 
