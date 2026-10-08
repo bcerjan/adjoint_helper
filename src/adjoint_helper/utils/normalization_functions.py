@@ -127,11 +127,19 @@ def normalize_fdtdx_weights(weights: list[WeightsType]) -> FDTDxWeights:
 
 
 def normalize_fdtdx_output(
-    opt_out: FDTDxOptReturn, settings: SimulationSettings, operation: str = "mean"
+    opt_out: FDTDxOptReturn,
+    settings: SimulationSettings,
+    symmetry: tuple[int, int, int] = (0, 0, 0),
+    operation: str = "mean",
 ) -> SimulationReturn:
     """IMPORTANT NOTE: This is currently configured to work with single FOM and single
     Parameter optimization problems. I need to come back and update it with a standard format
-    for more complivated functions."""
+    for more complivated functions.
+
+    Because FDTDx halves things when symmetry is applied, and only returns the relevant half,
+    we need to re-stack any symmetric directions as the rest of the code expects the full size
+    of weights.
+    """
 
     logger.info(
         "FDTDx auto-normalization currently only works correctly for a single FOM and"
@@ -145,6 +153,10 @@ def normalize_fdtdx_output(
     for i in range(settings.n_design_regions):
         label = f"design_region{i}"
         dr_grad = np.array(grad[label])  # explicit cast to convert from JAX
+        for j, dir in enumerate(symmetry):
+            if dir != 0:
+                # FDTDx uses a 'backwards' ordering, so we put the flipped one first
+                dr_grad = np.concatenate([np.flip(dr_grad, axis=j), dr_grad], axis=j)
         grad_out.append([[np.ravel(dr_grad)]])
 
     return [val], grad_out

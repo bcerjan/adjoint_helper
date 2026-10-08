@@ -32,7 +32,7 @@ from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettin
 # all units in um
 
 wavelength = 0.800
-resolution = 5
+resolution = 20
 subInd = 1.47  # SiO2
 matInd = 2.01  # SiN
 bgInd = 1  # air

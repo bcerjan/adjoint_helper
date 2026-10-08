@@ -138,6 +138,11 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         vox = self.units / self.resolution
         return (vox, vox, vox)
 
+    @computed_field
+    @property
+    def _single_grid_cell(self) -> float:
+        return self.units / self.resolution
+
     @model_validator(mode="after")
     def set_differentiation(self) -> Self:
         ah.anp.set_differentiation_lib("jax")
@@ -145,16 +150,18 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
     @model_validator(mode="after")
     def initialize_config(self) -> Self:
-        spacing = self.units / self.resolution
+        spacing = self._single_grid_cell
         self._config = fdtdx.SimulationConfig(
             time=self.maximum_runtime,
-            resolution=spacing,
+            grid=fdtdx.UniformGrid(spacing=spacing),
             dtype=jnp.float32,
             courant_factor=0.99,
+            symmetry=(0, -1, 0) if self.enforce_symmetry else (0, 0, 0),
         )
 
         # if self.enforce_symmetry:
-        #     self._config.at["symmetry"].set((0, -1, 0))
+        # self._config = self._config.at["symmetry"].set((0, -1, 0))
+        # self._config.symmetry = (0, -1, 0)
         # self._config.aset("symmetry", (0, -1, 0))
 
         grad_conf = fdtdx.GradientConfig(
@@ -171,12 +178,25 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
     @property
     def _volume(self) -> fdtdx.SimulationVolume:
+        y_size = self._design_y + 2 * self._pml_len + 2 * self._padding
+        if self.enforce_symmetry and y_size % 2 != 0:
+            # Add one cell to y to make it even:
+            y_size += self._single_grid_cell * 2
+
+        # x_cells = (self._design_x + 2 * self._pml_len + 2 * self._padding) / self.units
+        # x_cells = round(x_cells)
+        # y_cells = y_size / self.units
+        # y_cells = round(y_cells)
+        # z_cells = (self._wg_height + 2 * self._padding + 2 * self._pml_len) / self.units
+        # z_cells = round(z_cells)
         return fdtdx.SimulationVolume(
             partial_real_shape=(
                 self._design_x + 2 * self._pml_len + 2 * self._padding,
-                self._design_y + 2 * self._pml_len + 2 * self._padding,
+                y_size,
+                # Depending on resolution
                 self._wg_height + 2 * self._padding,
             ),
+            # partial_grid_shape=(x_cells, y_cells, z_cells),
             name="volume",
         )
 
@@ -190,6 +210,27 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         self,
     ) -> tuple[dict, list[fdtdx.PositionConstraint]]:
         return fdtdx.boundary_objects_from_config(self._boundary_config, self._volume)
+
+    def get_source(self) -> fdtdx.GaussianPlaneSource:
+        center_wave = fdtdx.WaveCharacter(wavelength=self.wavelength * self.units)
+        return fdtdx.GaussianPlaneSource(
+            wave_character=center_wave,
+            fixed_E_polarization_vector=(0, 1, 0),
+            radius=self.beamSize,
+            direction="-",
+            # elevation_angle=ah.anp.pi / 180 * -self.beamTilt,
+            # azimuth_angle=ah.anp.pi / 180 * -self.beamTilt,
+            partial_grid_shape=(None, None, 1),
+            partial_real_shape=(
+                self.beamSize * self.units * 3,
+                self.beamSize * self.units * 3,
+                None,
+            ),
+            temporal_profile=fdtdx.GaussianPulseProfile(
+                spectral_width=self._df, center_wave=center_wave
+            ),
+            name="source",
+        )
 
     def get_masks(self, filter_radius: float) -> ah.MaskRegion:
         """Return border masks for the design region.
@@ -227,11 +268,84 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         return ah.MaskRegion(locations=border_mask, value=1)  # type: ignore
 
     def normalization(self) -> float | list[float]:
+        volume = self._volume
+        object_list = [volume]
+        bndry_dict, c_list = self._boundary_objects
+        object_list.extend(list(bndry_dict.values()))
+        placement_constraints = c_list
+        source = self.get_source()
 
-        if self.enforce_symmetry:
-            a = 1  # TODO:
+        placement_constraints.extend(
+            [
+                source.place_at_center(volume, axes=(0, 1)),
+                source.place_relative_to(
+                    volume,
+                    axes=2,
+                    own_positions=1,
+                    other_positions=1,
+                    grid_margins=self._boundary_config.thickness_grid_maxz - 5,
+                ),
+            ]
+        )
 
-        return 1.0
+        object_list.append(source)
+
+        detector = fdtdx.PhasorPoyntingFluxDetector(
+            partial_grid_shape=(None, None, 1),
+            direction="-",
+            name="in_flux",
+            wave_characters=[
+                fdtdx.WaveCharacter(wavelength=self.wavelength * self.units)
+            ],
+        )
+
+        placement_constraints.extend(
+            [
+                detector.place_at_center(volume, axes=(0, 1), grid_margins=(5, 5)),
+                detector.place_relative_to(
+                    source, axes=2, own_positions=-1, other_positions=1, grid_margins=10
+                ),
+            ]
+        )
+
+        object_list.append(detector)
+
+        config = fdtdx.SimulationConfig(
+            time=self.maximum_runtime,
+            grid=fdtdx.UniformGrid(spacing=self._single_grid_cell),
+            dtype=jnp.float32,
+            courant_factor=0.99,
+            symmetry=(0, -1, 0) if self.enforce_symmetry else (0, 0, 0),
+        )
+
+        key, subkey = jax.random.split(jax.random.PRNGKey(self.seed))
+        objects, arrays, params, config, info = fdtdx.place_objects(
+            object_list=object_list,
+            config=config,
+            constraints=placement_constraints,
+            key=subkey,
+        )
+
+        def sim_fn(
+            arrays,
+            key,
+        ):
+            final_state = fdtdx.run_fdtd(
+                arrays=arrays, objects=objects, key=subkey, config=config
+            )
+
+            _, arrays = final_state
+
+            in_flux = arrays.detector_states["in_flux"]["phasor"].sum()
+            in_flux = ah.anp.abs(in_flux)
+            return in_flux
+
+        logger.info("Compiling normalization run...")
+        jitted = jax.jit(sim_fn).lower(arrays, key).compile()
+        logger.info("Running normalization...")
+        val = jitted(arrays, subkey)
+
+        return val
 
     def create_sim(
         self, optimization: ah.OptimizationSettings
@@ -350,26 +464,8 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
             )
 
             self._object_list.append(detector)
-            center_wave = fdtdx.WaveCharacter(wavelength=self.wavelength * self.units)
 
-            source = fdtdx.GaussianPlaneSource(
-                wave_character=center_wave,
-                fixed_E_polarization_vector=(0, 1, 0),
-                radius=self.beamSize,
-                direction="-",
-                elevation_angle=ah.anp.pi / 180 * -self.beamTilt,
-                partial_grid_shape=(None, None, 1),
-                partial_real_shape=(
-                    self.beamSize * self.units * 3,
-                    self.beamSize * self.units * 3,
-                    None,
-                ),
-                temporal_profile=fdtdx.GaussianPulseProfile(
-                    spectral_width=self._df, center_wave=center_wave
-                ),
-                name="source",
-            )
-
+            source = self.get_source()
             placement_constraints.extend(
                 [
                     source.place_at_center(device, axes=(0, 1)),
@@ -483,19 +579,28 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         ) -> ah.SimulationReturn:
 
             fdtdx_weights = normalize_fdtdx_weights(weights=weights)
-            # fdtdx_weights = ParameterContainer(fdtdx_weights)
+
+            if self.enforce_symmetry:
+                num_y = round(fdtdx_weights["design_region0"].shape[1] / 2)
+                fdtdx_weights["design_region0"] = fdtdx_weights["design_region0"][
+                    :, 0:num_y
+                ]
 
             opt_out = self._jitted_loss(
                 fdtdx_weights,
                 bound_data,
                 subkey,
             )
-
+            #
             # For common backends, there should be a similar utility function
             # to automatically normalize the output into the correct shape
             # for the rest of the library. If there isn't one for your backend,
             # feel free to write one and submit it as a PR.
-            val, grad = normalize_fdtdx_output(opt_out=opt_out, settings=self)
+            val, grad = normalize_fdtdx_output(
+                opt_out=opt_out,
+                settings=self,
+                symmetry=(0, -1, 0) if self.enforce_symmetry else (0, 0, 0),
+            )
 
             return (val, grad)
 
