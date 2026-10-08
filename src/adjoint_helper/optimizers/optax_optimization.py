@@ -87,6 +87,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
         opt = self.simulation_settings.get_objective(self)
         [obj], grad = opt(weights)
+        obj = float(obj)
 
         if self.apply_connectivity:
             connectivity, g = self.simulation_settings.connectivity_constraint(
@@ -94,7 +95,8 @@ class OptaxOptimizationSettings(OptimizationSettings):
             )
 
             if connectivity > 0:
-                grad[:] = grad[:] + g[:] * self.connectivity_penalty
+                grad = anp.set(grad)[:].set(grad[:] + g[:] * self.connectivity_penalty)
+                # grad[:] = grad[:] + g[:] * self.connectivity_penalty
                 obj += connectivity * self.connectivity_penalty
 
         if self.apply_linewidth:
@@ -104,10 +106,11 @@ class OptaxOptimizationSettings(OptimizationSettings):
             )
 
             if fabrication > 0:
-                grad[:] = grad[:] + g[:] * self.linewidth_penalty
+                grad = anp.set(grad)[:].set(grad[:] + g[:] * self.linewidth_penalty)
+                # grad[:] = grad[:] + g[:] * self.linewidth_penalty
                 obj += fabrication * self.linewidth_penalty
 
-        self.fom.append(obj)
+        self.fom.append(float(obj))
         self.weights.append(
             self.simulation_settings.vector_to_arrays(real_np.asarray(weights))
         )
@@ -149,11 +152,12 @@ class OptaxOptimizationSettings(OptimizationSettings):
 
                 updates, opt_state = optimizer.update(grad, opt_state, weights)
 
-                weights[:] = optax.apply_updates(weights, updates)  # type: ignore
+                w_out = optax.apply_updates(weights, updates)  # type: ignore
+
+                weights = anp.at(weights)[:].set(anp.clip(w_out, 0.0, 1.0))
 
                 self.simulation_settings.apply_masks()
                 self.simulation_settings.apply_symmetry()
-                weights[:] = anp.clip(weights, 0.0, 1.0)
 
         optimal_design_weights = self.simulation_settings.filter_and_project(
             optimization=self

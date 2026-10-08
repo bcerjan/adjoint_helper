@@ -205,9 +205,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         if grad_out.size > 0:
             # a1 hyperparameter from the constraint
             grad[:, 0] = -1e3
-            grad[:, 1] = grad_out
+            grad[:, 1] = real_np.asarray(grad_out)
 
-        return spacing
+        return float(spacing)
 
     def _connectivity_cons(
         self,
@@ -225,12 +225,12 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         connectivity, grad_out = self.simulation_settings.connectivity_constraint(
             optimization=self
         )
-        if grad_out.size > 0:
+        if grad.size > 0:
             # TODO: What should the grad be here?
             grad[:, 0] = -1e-3
-            grad[:, 1] = grad_out
+            grad[:, 1] = real_np.asarray(grad_out)
 
-        return connectivity
+        return float(connectivity)
 
     def _nlopt_epigraph_constraint(
         self,
@@ -252,18 +252,18 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
 
         if gradient.size > 0:
             gradient[:, 0] = -1  # gradient with respect to epigraph variable
-            gradient[:, 1:] = grad  # real gradients per-parameter
+            gradient[:, 1:] = real_np.asarray(grad)  # real gradients per-parameter
 
-        result[:] = anp.real(f0) - epigraph
+        result[:] = float(anp.real(f0)) - epigraph
 
         obj: float = anp.linalg.norm(f0)  # type: ignore
-        self.fom.append(anp.real(obj))
+        self.fom.append(float(anp.real(obj)))
         self.weights.append(
             self.simulation_settings.vector_to_arrays(real_np.asarray(weights.copy()))
         )
         self.data.append(epigraph)
 
-        return obj
+        return float(obj)
 
     def _nlopt_epigraph_f(
         self, epigraph_and_weights: RawWeightsType, grad: RawWeightsType
@@ -357,7 +357,9 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             # n_objs x n_params x total_n
             solver.set_min_objective(self._nlopt_epigraph_f)
 
-            weights_and_epigraph[:] = solver.optimize(weights_and_epigraph)  # type: ignore
+            w_and_e = solver.optimize(weights_and_epigraph)  # type: ignore
+
+            weights_and_epigraph = anp.at(weights_and_epigraph)[:].set(w_and_e)
 
             save_output(optimization=self, sigmoid_bias=sigmoid_bias)
 

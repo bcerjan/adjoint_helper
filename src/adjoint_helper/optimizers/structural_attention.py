@@ -275,13 +275,15 @@ class StructuralAttentionDesignRegion(DesignRegion):
         y_start = j * y_step
         x_stop = x_start + x_step
         y_stop = y_start + y_step
-        self.weights[x_start:x_stop, y_start:y_stop] = self.design_units[
-            design_unit_idx
-        ]
+        self.weights = anp.at(self.weights)[x_start:x_stop, y_start:y_stop].set(
+            self.design_units[design_unit_idx]
+        )
+
         self.design_unit_weights[i, j] = design_unit_idx
 
         out = anp.zeros_like(self.weights)
-        out[x_start:x_stop, y_start:y_stop] = 1
+        out = anp.at(out)[x_start:x_stop, y_start:y_stop].set(1)
+        # out[x_start:x_stop, y_start:y_stop] = 1
         return out
 
 
@@ -383,7 +385,8 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
         for dr, ddr in zip(
             self.simulation_settings.design_regions, self.digital_design_regions
         ):
-            dr.weights = ddr.weights
+            # dr.weights = ddr.weights
+            dr.weights = anp.at(dr.weights)[:, :].set(ddr.weights)
 
     def optimize(self) -> list[WeightsType]:
         """
@@ -402,7 +405,8 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
 
         # Initialize path-integral attribution maps (one per design region) to 0
         self.attribution_maps = [
-            anp.zeros_like(r.weights) for r in self.simulation_settings.design_regions
+            real_np.zeros_like(r.weights)
+            for r in self.simulation_settings.design_regions
         ]
 
         total_iters = self.max_evals[0]
@@ -419,7 +423,7 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
 
             # Evaluate FOM and gradients
             [fom_orig], grad = opt(weights)
-            fom: float = anp.clip(fom_orig, 0, 1)
+            fom: float = float(anp.clip(fom_orig, 0, 1))
             if anp.any(fom != fom_orig):
                 logger.warning(
                     "Clipping was required to bring FOM within [0,1]."
@@ -428,9 +432,9 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
 
             # Invert to account for minimization:
             fom = 1 - fom
-            grad[:] = -grad
+            grad = anp.at(grad)[:].set(-1 * grad)
 
-            self.fom.append(fom)
+            self.fom.append(float(fom))
             self.weights.append(
                 self.simulation_settings.vector_to_arrays(
                     real_np.asarray(weights)
@@ -467,16 +471,16 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
                 p_big = anp.tanh(self.beta * anp.abs(a_big))  # type: ignore
 
                 r_mat = anp.random.uniform(size=p_big.shape)
-                p_big = anp.where(p_big < r_mat, 0, p_big)
+                p_big_final = anp.where(p_big < r_mat, 0, p_big)
 
                 size_x, size_y = ddr.get_size_in_design_units
                 alpha = self.update_fraction * (1 - fom_best)
 
                 n_selected = int(anp.ceil(size_x * size_y * alpha))
 
-                partition_idxs = anp.argpartition(anp.ravel(p_big), kth=-n_selected)[
-                    -n_selected:
-                ]
+                partition_idxs = anp.argpartition(
+                    anp.ravel(p_big_final), kth=-n_selected
+                )[-n_selected:]
 
                 for idx in partition_idxs:
                     i, j = anp.unravel_index(idx, s_big.shape)

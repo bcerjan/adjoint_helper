@@ -89,10 +89,10 @@ class NloptOptimizationSettings(OptimizationSettings):
             optimization=self
         )
 
-        if grad_out.size > 0:
-            grad[:] = grad_out
+        if grad.size > 0:
+            grad[:] = real_np.asarray(grad_out)
 
-        return spacing
+        return float(spacing)
 
     def _connectivity_cons(
         self,
@@ -109,10 +109,10 @@ class NloptOptimizationSettings(OptimizationSettings):
         connectivity, grad_out = self.simulation_settings.connectivity_constraint(
             optimization=self
         )
-        if grad_out.size > 0:
-            grad[:] = grad_out
+        if grad.size > 0:
+            grad[:] = real_np.asarray(grad_out)
 
-        return connectivity
+        return float(connectivity)
 
     def _nlopt_objective_f(
         self,
@@ -133,15 +133,15 @@ class NloptOptimizationSettings(OptimizationSettings):
         [obj], vec_out = opt(weights)
 
         if grad is not None and grad.size > 0:
-            grad[:] = vec_out
+            grad[:] = real_np.asarray(vec_out, dtype=real_np.float64).flatten()
 
-        self.fom.append(obj)
+        self.fom.append(float(obj))
         self.weights.append(
             self.simulation_settings.vector_to_arrays(real_np.asarray(weights.copy()))
         )
         save_output(self, self.sigmoid_bias)
 
-        return obj
+        return float(obj)
 
     def optimize(self) -> list[WeightsType]:
         """Runs an nlopt optimization directly (no fancy business)
@@ -194,8 +194,8 @@ class NloptOptimizationSettings(OptimizationSettings):
             for k, v in self.nlopt_params:
                 solver.set_param(k, v)
 
-            weights[:] = solver.optimize(weights)
-
+            w_out = solver.optimize(weights)
+            weights = anp.at(weights)[:].set(w_out)
             self.simulation_settings.update_weights(
                 self.simulation_settings.vector_to_arrays(weights)
             )
