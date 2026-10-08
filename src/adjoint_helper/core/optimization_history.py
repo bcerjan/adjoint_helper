@@ -70,6 +70,10 @@ class OptimizationHistory(BaseModel):
             def stringify_paths(obj):
                 if isinstance(obj, Path):
                     return str(obj)
+                if hasattr(obj, "tolist"):
+                    return obj.tolist()
+                if hasattr(obj, "item"):
+                    return obj.item()
                 if isinstance(obj, dict):
                     return {k: stringify_paths(v) for k, v in obj.items()}
                 if isinstance(obj, list):

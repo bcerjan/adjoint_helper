@@ -18,11 +18,44 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["anp"]
 
+from copy import copy
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
+from weakref import proxy
 
 import numpy as real_np
 
 AVAILABLE_DIFF_LIBS = {"autograd", "jax"}
+
+
+class AtIndexer:
+    arr: real_np.ndarray
+
+    def __init__(self, arr):
+        self.arr = arr
+        self.proxy = proxy
+
+    def __getitem__(self, index):
+        return AtSetter(self.arr, index)
+
+
+class AtSetter:
+    arr: real_np.ndarray
+    index: int
+
+    def __init__(self, arr, index) -> None:
+        self.arr = arr
+        self.index = index
+
+    def set(self, value):
+        arr_copy = copy(self.arr)
+        arr_copy[self.index] = value
+        return arr_copy
+
+    def add(self, value):
+        arr_copy = copy(self.arr)
+        arr_copy[self.index] += value
+        return arr_copy
 
 
 class DifferentiationProxy:
@@ -41,7 +74,7 @@ class DifferentiationProxy:
         return self._active_diff_lib
 
     @property
-    def _numpy(self):
+    def _numpy(self) -> ModuleType:
         if self._active_diff_lib == "jax":
             import jax.numpy as jnp
 
@@ -50,6 +83,27 @@ class DifferentiationProxy:
             import autograd.numpy as npa
 
             return npa
+
+        raise ValueError("Invalid diff. library")
+
+    @property
+    def float_type(self):
+        if self._active_diff_lib == "jax":
+            from jax import numpy as jnp
+
+            return jnp.float32
+
+        if self._active_diff_lib == "autograd":
+            from autograd import numpy as npa
+
+            return npa.float64
+
+    # custom `.at` so we can share syntax between jax and autograd
+    def at(self, arr: Any) -> Any:
+        if self.backend == "jax":
+            return arr.at
+        if self.backend == "autograd":
+            return AtIndexer(arr)
 
     # Override Functions:
     def grad(self, fun, argnum=0, *args, **kwargs):

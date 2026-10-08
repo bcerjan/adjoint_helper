@@ -125,6 +125,24 @@ class DesignRegion(BaseModel):
 
     @computed_field
     @property
+    def x_size_adjusted(self) -> float:
+        return (
+            self.x_size
+            if self.centering == "node"
+            else self.x_size - 1 / self.resolution
+        )
+
+    @computed_field
+    @property
+    def y_size_adjusted(self) -> float:
+        return (
+            self.y_size
+            if self.centering == "node"
+            else self.y_size - 1 / self.resolution
+        )
+
+    @computed_field
+    @property
     def do_connectivity(self) -> bool:
         return len(self.connected_sides) > 0
 
@@ -207,12 +225,8 @@ class DesignRegion(BaseModel):
         weights_filtered = conic_filter(
             pure_weights,
             optimization.filter_radius,
-            self.x_size
-            if self.centering == "node"
-            else self.x_size - 1 / self.resolution,
-            self.y_size
-            if self.centering == "node"
-            else self.x_size - 1 / self.resolution,
+            self.x_size_adjusted,
+            self.y_size_adjusted,
             [self.resolution],
         )
 
@@ -258,7 +272,7 @@ class DesignRegion(BaseModel):
         out = anp.tensor_jacobian_product(_combined_func, 0)(
             self.weights, self.unflatten_array(gradient)
         )
-        gradient[:] = out.flatten()
+        gradient[:] = out.flatten()  # Note that we intentionally don't use anp.at here
 
     def line_width_and_spacing_constraint(
         self,
@@ -291,8 +305,8 @@ class DesignRegion(BaseModel):
             return conic_filter(  # type: ignore
                 x=a,
                 radius=optimization.filter_radius,
-                Lx=self.x_size,
-                Ly=self.y_size,
+                Lx=self.x_size_adjusted,
+                Ly=self.y_size_adjusted,
                 resolution=[self.resolution],
             )
 
@@ -323,7 +337,7 @@ class DesignRegion(BaseModel):
 
         t1 = (M1(self.weights) - b1) / a1
         t2 = (M2(self.weights) - b1) / a1
-        max = anp.max([t1, t2])  # type: ignore
+        max = real_np.max([t1, t2])  # type: ignore
 
         if max == t1:
             gradi = g1
@@ -422,9 +436,9 @@ class DesignRegion(BaseModel):
         optimization.sigmoid_bias = anp.inf
         ret = self.filter_and_project(optimization=optimization)
 
-        ret[:, :] = anp.where(ret >= 0.5, 1, 0)
+        out = anp.where(ret >= 0.5, 1, 0)
         optimization.sigmoid_bias = bias
-        return ret
+        return out
 
     def output_csv(
         self,
@@ -581,11 +595,10 @@ class SimulationSettings(BaseModel, ABC):
             self.needs_baseline = False
 
     def get_empty_grads(self) -> list[list[list[RawWeightsType]]]:
-        typ = anp.float64 if anp.backend == "autograd" else anp.float32
         return [
             [
                 [
-                    anp.zeros(r.total_n, dtype=typ)
+                    anp.zeros(r.total_n, dtype=anp.float_type)
                     for _ in range(self.n_design_parameters)
                 ]
                 for _ in range(self.n_objective_functions)
@@ -641,15 +654,7 @@ class SimulationSettings(BaseModel, ABC):
             )
 
         for i, r in enumerate(self.design_regions):
-            if anp.backend == "jax":
-                r.weights = r.weights.at[:, :].set(new_weights[i])
-                return
-
-            if anp.backend == "autograd":
-                r.weights[:, :] = new_weights[i]
-                return
-
-            raise ValueError("Error when setting weights, backend not found")
+            r.weights = anp.at(r.weights)[:, :].set(new_weights[i])
 
     def vector_to_arrays(self, vec: RawWeightsType) -> list[WeightsType]:
         """Split the vector into pieces for each design region"""
@@ -669,7 +674,7 @@ class SimulationSettings(BaseModel, ABC):
         for w in arrays:
             flat = w.flatten()
             stop = start + len(flat)
-            ret[start:stop] = flat
+            ret = anp.at(ret)[start:stop].set(flat)
             start = stop
 
         return ret
@@ -703,7 +708,7 @@ class SimulationSettings(BaseModel, ABC):
                 resolution=self.resolution, optimization=optimization
             )
             val += v
-            grads[start:stop] = g
+            grads = anp.at(grads)[start:stop].set(g)
             start = stop
         return (val, grads)
 
@@ -718,7 +723,7 @@ class SimulationSettings(BaseModel, ABC):
             stop = start + r.total_n
             v, g = r.connectivity_constraint(optimization=optimization)
             val += v
-            grads[start:stop] = g
+            grads = anp.at(grads)[start:stop].set(g)
             start = stop
         return (val, grads)
 
@@ -1056,18 +1061,9 @@ def _(
 
         for dr_i, obj_func, param, r in settings.design_space:
             r.backpropagate(dJ_du[dr_i][obj_func][param], optimization=optimization)
-            if anp.backend == "jax":
-                temp_grads[dr_i][obj_func][param] = (
-                    temp_grads[dr_i][obj_func][param]
-                    .at[:]
-                    .set(dJ_du[dr_i][obj_func][param])
-                )
-            if anp.backend == "autograd":
-                temp_grads[dr_i][obj_func][param][:] = dJ_du[dr_i][obj_func][param]
-            if anp.backend != "jax" and anp.backend != "autograd":
-                raise ValueError(
-                    "Disallowed differentiation engine in registered objective"
-                )
+            temp_grads[dr_i][obj_func][param] = anp.at(
+                temp_grads[dr_i][obj_func][param]
+            )[:].set(dJ_du[dr_i][obj_func][param])
         grad_out = combine_gradients_by_design_region(temp_grads, operation="sum")
         vec_out = anp.concatenate(grad_out)
 
