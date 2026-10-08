@@ -40,6 +40,10 @@ diffusion = [
   "mpi4py",
 ]
 
+fdtdx = [
+  "fdtdx"
+]
+
 [project.urls]
 Homepage = "https://github.com/bcerjan/adjoint_helper"
 Issues = "https://github.com/bcerjan/adjoint_helper/issues"

@@ -65,6 +65,7 @@ class DifferentiationProxy:
         self._active_diff_lib = "autograd"
 
     def set_differentiation_lib(self, lib: str) -> None:
+        lib = lib.lower()
         if lib not in AVAILABLE_DIFF_LIBS:
             raise ValueError(f"Differentiation Lib must be in {AVAILABLE_DIFF_LIBS}")
         self._active_diff_lib = lib
