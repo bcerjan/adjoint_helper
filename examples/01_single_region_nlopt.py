@@ -22,7 +22,6 @@ optimization. The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
 import nlopt  # type: ignore
-import numpy as np
 from single_region_meep_example_settings import SingleRegionExampleSettings
 
 import adjoint_helper as ah
@@ -33,7 +32,7 @@ from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettin
 # all units in um
 
 wavelength = 0.800
-resolution = 20
+resolution = 5
 subInd = 1.47  # SiO2
 matInd = 2.01  # SiN
 bgInd = 1  # air
@@ -53,7 +52,10 @@ design_region = ah.DesignRegion(
     resolution=resolution * 2,
     # the layout in numpy is transposed from what we actually want,
     # so to enforce +y/-y symmetry we do a fliplr
-    symmetry_func=lambda w: w / 2 + np.fliplr(w / 2),
+    # Note that we use a custom numpy replacement here. It expands
+    # to either autograd or jax depending on which is being used
+    # elsewhere.
+    symmetry_func=lambda w: w / 2 + ah.anp.fliplr(w / 2),
 )
 
 settings = SingleRegionExampleSettings(
@@ -87,6 +89,14 @@ nlopt_optimization = NloptOptimizationSettings(
 
 # Because our mask depends on the simulation setup and optimization setup,
 # we have to define it after we have our settings in place.
-settings.design_regions[0].mask = settings.get_masks(nlopt_optimization.filter_radius)
+nlopt_optimization.simulation_settings.design_regions[0].mask = settings.get_masks(
+    nlopt_optimization.filter_radius
+)
 
+# dummy_weights = np.ones_like(nlopt_optimization.simulation_settings.weights[0])
+# nlopt_optimization.simulation_settings.update_weights([dummy_weights])
+# nlopt_optimization.simulation_settings.apply_masks()
+# nlopt_optimization.simulation_settings.apply_symmetry()
+#
+# save_output(nlopt_optimization, 8, False)
 nlopt_optimization.optimize()

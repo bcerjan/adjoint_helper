@@ -25,7 +25,8 @@ can be reused in other examples.
 import numpy as np
 from single_region_meep_example_settings import SingleRegionExampleSettings
 
-from adjoint_helper import DesignRegion, OptimizationHistory
+import adjoint_helper as ah
+from adjoint_helper import DesignRegion
 from adjoint_helper.core.defs import WeightsType
 from adjoint_helper.optimizers.structural_attention import (
     StructuralAttentionOptimizationSettings,
@@ -55,7 +56,7 @@ design_region = DesignRegion(
     resolution=resolution * 2,
     # the layout in numpy is transposed from what we actually want,
     # so to enforce +y/-y symmetry we do a fliplr
-    symmetry_func=lambda w: w / 2 + np.fliplr(w / 2),
+    symmetry_func=lambda w: w / 2 + ah.anp.fliplr(w / 2),
     # For Structural Attention we need the actual index values, so you must
     # pass them in here
     index_1=matInd,
@@ -105,11 +106,4 @@ structural_attention_optimization = StructuralAttentionOptimizationSettings(
     max_evals=[5],  # Run for 50 evaluations
 )
 
-# TESTING:
-weights = structural_attention_optimization.simulation_settings.weights
-# hist = OptimizationHistory(optimization=structural_attention_optimization)
-# hist.save_to_json()
-# plt.figure()
-# plt.imshow(weights[0])
-# plt.show()
 structural_attention_optimization.optimize()

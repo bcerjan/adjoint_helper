@@ -21,10 +21,10 @@ Example of setting up an optimization with multiple design regions.
 The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
-import autograd.numpy as npa
 import nlopt
 from multi_region_meep_example_settings import MultiRegionExampleSettings
 
+import adjoint_helper as ah
 from adjoint_helper import DesignRegion, OptimizationHistory
 from adjoint_helper.optimizers.nlopt_optimization import NloptOptimizationSettings
 
@@ -57,7 +57,7 @@ for _ in range(n_regions):
             # ordering of the weights in numpy
             # We also need to use the npa version (instead of np)
             # as we backpropagate through this function
-            symmetry_func=lambda w: w / 2 + npa.flipud(w / 2),
+            symmetry_func=lambda w: w / 2 + ah.anp.flipud(w / 2),
         )
     )
 

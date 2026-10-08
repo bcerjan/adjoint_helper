@@ -1,4 +1,3 @@
-import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
@@ -193,12 +192,12 @@ class MultiEverythingExampleSettings(ah.SimulationSettings):
         # Note that in meep every objective function must accept
         # arguments for all objective functions, even if unused
         def J1(far_field: list[list[complex]], _: np.ndarray) -> float:
-            return -(npa.abs(far_field[0, :, 2]) ** 2)  # type: ignore
+            return -(ah.anp.abs(far_field[0, :, 2]) ** 2)  # type: ignore
 
         def J2(_: list[list[complex]], dft_ez: np.ndarray) -> float:
             # If you do not use axis=1, you sum the response from all of the
             # frequencies (which may or may not be what you want)
-            return -(npa.sum(npa.abs(dft_ez) ** 2, axis=1))  # type: ignore
+            return -(ah.anp.sum(ah.anp.abs(dft_ez) ** 2, axis=1))  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,

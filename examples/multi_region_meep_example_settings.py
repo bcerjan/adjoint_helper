@@ -1,4 +1,3 @@
-import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
 import numpy as np
@@ -210,7 +209,7 @@ class MultiRegionExampleSettings(ah.SimulationSettings):
 
         # We negate to make this a minimization objective
         def J(far_field: list[list[complex]]) -> float:
-            return -npa.abs(far_field[0, :, 2] ** 2)  # type: ignore
+            return -ah.anp.abs(far_field[0, :, 2] ** 2)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,

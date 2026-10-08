@@ -21,9 +21,9 @@ Example of setting up an optimization with multiple design regions.
 The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
-import numpy as np
 from multi_region_meep_example_settings import MultiRegionExampleSettings
 
+import adjoint_helper as ah
 from adjoint_helper import DesignRegion
 from adjoint_helper.optimizers.optax_optimization import OptaxOptimizationSettings
 
@@ -54,7 +54,7 @@ for _ in range(n_regions):
             resolution=resolution * 1,
             # Enforces horizontal symmetry -- we flipud due to the
             # ordering of the weights in numpy
-            symmetry_func=lambda w: w / 2 + np.flipud(w / 2),
+            symmetry_func=lambda w: w / 2 + ah.anp.flipud(w / 2),
         )
     )
 

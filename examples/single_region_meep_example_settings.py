@@ -21,10 +21,8 @@ This file contains a demonstration of a simple single-region single-objective
 optimization. The settings (the only hard part) are defined separately so they
 can be reused in other examples.
 """
-import autograd.numpy as npa
 import meep as mp  # type: ignore
 import meep.adjoint as mpa  # type: ignore
-import numpy as np
 
 import adjoint_helper as ah
 from adjoint_helper.utils.normalization_functions import (
@@ -121,17 +119,17 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         List of masks for fixed region on the edges (including waveguide port) and forced
         empty regions (adjacent to wavguide port)
         """
-        x_grid = np.linspace(
+        x_grid = ah.anp.linspace(
             -self.design_regions[0].x_size / 2,
             self.design_regions[0].x_size / 2,
             self.design_regions[0].nx_design,
         )
-        y_grid = np.linspace(
+        y_grid = ah.anp.linspace(
             -self.design_regions[0].y_size / 2,
             self.design_regions[0].y_size / 2,
             self.design_regions[0].ny_design,
         )
-        xy_grid_x, xy_grid_y = np.meshgrid(
+        xy_grid_x, xy_grid_y = ah.anp.meshgrid(
             x_grid,
             y_grid,
             sparse=True,
@@ -140,7 +138,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         left_waveguide_port = (
             xy_grid_x <= -self.design_regions[0].x_size / 2 + filter_radius
-        ) & (np.abs(xy_grid_y) <= self.wgWidth / 2)
+        ) & (ah.anp.abs(xy_grid_y) <= self.wgWidth / 2)
 
         border_mask = left_waveguide_port
 
@@ -272,7 +270,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
             mp.Vector3(nxDesign, nyDesign, 0),
             backMed,
             matMed,
-            weights=np.ones((nxDesign, nyDesign)) * 0.5,
+            weights=ah.anp.ones((nxDesign, nyDesign)) * 0.5,
             beta=optimization.sigmoid_bias,
             do_averaging=optimization.use_epsavg,
             damping=0.5 * 6.28 / self.wavelength if optimization.use_damping else 0,
@@ -323,7 +321,7 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
 
         # 1 - power to make it a minimization problem
         def J(alpha: float) -> float:
-            return 1 - npa.abs(alpha**2 / self.baseline_optimization_value)  # type: ignore
+            return 1 - ah.anp.abs(alpha**2 / self.baseline_optimization_value)  # type: ignore
 
         opt = mpa.OptimizationProblem(
             simulation=sim,
@@ -345,7 +343,9 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
         opt = self.create_sim(optimization=optimization)
 
         def obj(
-            weights: list[np.ndarray[tuple[int, int], np.dtype[np.float64]]],
+            weights: list[
+                ah.anp.ndarray[tuple[int, int], ah.anp.dtype[ah.anp.float64]]
+            ],
         ) -> ah.SimulationReturn:
             # Meep's opt wants 1D vectors of weights, but we receive a 2D array
             # from the optimization backend (always)
