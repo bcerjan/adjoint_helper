@@ -111,7 +111,9 @@ type FDTDxOptReturn = tuple[float, dict[str, WeightsType]]
 type FDTDxWeights = dict[str, WeightsType]
 
 
-def normalize_fdtdx_weights(weights: list[WeightsType]) -> FDTDxWeights:
+def normalize_fdtdx_weights(
+    weights: list[WeightsType], symmetry: tuple[int, int, int] = (0, 0, 0)
+) -> FDTDxWeights:
     """We import jax.numpy here so we can pass back JAX arrays for use in JIT
     functions (like our loop). We import jax here instead of at the top as
     not all of the installations will require jax."""
@@ -119,7 +121,13 @@ def normalize_fdtdx_weights(weights: list[WeightsType]) -> FDTDxWeights:
 
     ret = {}
     for i, w in enumerate(weights):
-        temp = jnp.asarray(w.copy())
+        temp = w
+        # FDTDx only wants the weights for the part of the
+        # domain it is simulating
+        for j, dir in enumerate(symmetry):
+            if dir != 0:
+                _, temp = np.split(temp, 2, axis=j)
+        temp = jnp.asarray(temp.copy())
         label = f"design_region{i}"
         ret[label] = jnp.expand_dims(temp, -1)
         # ret[label] = jnp.array(jnp.expand_dims(w, -1))

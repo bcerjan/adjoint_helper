@@ -104,7 +104,7 @@ def save_fom_history(optimization: OptimizationSettings, history_dir: Path) -> N
     if am_mpi_master():
         history_dir.mkdir(parents=True, exist_ok=True)
         plt.figure()  # type: ignore
-        plt.plot(optimization.data, "o-")  # type: ignore
+        plt.plot(optimization.fom, "o-")  # type: ignore
         # plt.yscale("log")  # type: ignore
         plt.grid(True)  # type: ignore
         plt.xlabel("Iteration")  # type: ignore

@@ -58,11 +58,15 @@ class StructuralAttentionDesignRegion(DesignRegion):
         if self.index_0 is None or not isinstance(self.index_0, (int, float, complex)):
             raise ValueError(
                 "Index 0 of design region must be numeric if using Structural Attention"
+                " You probably forgot to set index_0 in the constructor. It should be the"
+                " 'background' material."
             )
 
         if self.index_1 is None or not isinstance(self.index_1, (int, float, complex)):
             raise ValueError(
                 "Index 1 of design region must be numeric if using Structural Attention"
+                " You probably forgot to set index_1 in the constructor. It should be the"
+                " 'main' material."
             )
 
         return self
@@ -92,9 +96,12 @@ class StructuralAttentionDesignRegion(DesignRegion):
         y_step = self.design_unit_y
         for x in range(x_units):
             for y in range(y_units):
-                out[x * x_step : (x + 1) * x_step, y * y_step : (y + 1) * y_step] = (
-                    self.design_units[self.design_unit_weights[x, y]]
-                )
+                out = anp.at(out)[
+                    x * x_step : (x + 1) * x_step, y * y_step : (y + 1) * y_step
+                ].set(self.design_units[self.design_unit_weights[x, y]])
+                # out[x * x_step : (x + 1) * x_step, y * y_step : (y + 1) * y_step] = (
+                #     self.design_units[self.design_unit_weights[x, y]]
+                # )
 
         return out
 
@@ -122,11 +129,10 @@ class StructuralAttentionDesignRegion(DesignRegion):
         if self.design_unit_weights.size == 0:
             x = self.nx_design // self.design_unit_x
             y = self.ny_design // self.design_unit_y
-            self.design_unit_weights = anp.random.randint(
+            self.design_unit_weights = anp.randint(
                 0,
                 len(self.design_units),
                 size=(x, y),
-                dtype=int,
             )
 
             self.weights = self.digitzed_weights
@@ -182,7 +188,7 @@ class StructuralAttentionDesignRegion(DesignRegion):
             for y in range(y_size):
                 y_idx = y * y_step
                 y_stop = y_idx + y_step
-                out[x, y] = func(arr[x_idx:x_stop, y_idx:y_stop])
+                out = anp.at(out)[x, y].set(func(arr[x_idx:x_stop, y_idx:y_stop]))
 
         return out
 
@@ -279,7 +285,10 @@ class StructuralAttentionDesignRegion(DesignRegion):
             self.design_units[design_unit_idx]
         )
 
-        self.design_unit_weights[i, j] = design_unit_idx
+        self.design_unit_weights = anp.at(self.design_unit_weights)[i, j].set(
+            design_unit_idx
+        )
+        # self.design_unit_weights[i, j] = design_unit_idx
 
         out = anp.zeros_like(self.weights)
         out = anp.at(out)[x_start:x_stop, y_start:y_stop].set(1)
@@ -386,7 +395,7 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
             self.simulation_settings.design_regions, self.digital_design_regions
         ):
             # dr.weights = ddr.weights
-            dr.weights = anp.at(dr.weights)[:, :].set(ddr.weights)
+            dr.weights = anp.at(anp.array(dr.weights))[:, :].set(ddr.weights)
 
     def optimize(self) -> list[WeightsType]:
         """
@@ -470,7 +479,7 @@ class StructuralAttentionOptimizationSettings(OptimizationSettings):
                 # actually wrote.
                 p_big = anp.tanh(self.beta * anp.abs(a_big))  # type: ignore
 
-                r_mat = anp.random.uniform(size=p_big.shape)
+                r_mat = anp.rand_uniform(size=p_big.shape)
                 p_big_final = anp.where(p_big < r_mat, 0, p_big)
 
                 size_x, size_y = ddr.get_size_in_design_units

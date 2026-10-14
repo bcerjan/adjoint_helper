@@ -58,6 +58,29 @@ class AtSetter:
         return arr_copy
 
 
+class _NdarrayMeta(type):
+    def __getitem__(cls, item):
+        return real_np.ndarray[item]
+
+    def __instancecheck__(cls, instance):
+        if isinstance(instance, real_np.ndarray):
+            return True
+        mod = getattr(type(instance), "__module__", "")
+        name = getattr(type(instance), "__name__", "")
+        if "jax" in mod or "Array" in name or "Tracer" in name:
+            return True
+        return bool("autograd" in mod or "ArrayBox" in name)
+
+    def __call__(cls, *args, **kwargs):
+        return real_np.ndarray(*args, **kwargs)
+
+
+class DifferentiableNDArray(metaclass=_NdarrayMeta):
+    """Hybrid array type supporting both PEP 585 subscripting and JAX/Autograd isinstance checks."""
+
+    pass
+
+
 class DifferentiationProxy:
     _active_diff_lib: str
 
@@ -165,7 +188,30 @@ class DifferentiationProxy:
                 fun, argnum, *args, **kwargs
             )
 
+    def rand_uniform(self, size=tuple[int, int], min: float = 0.0, max: float = 1.0):
+        if self._active_diff_lib == "jax":
+            import jax
+
+            key = jax.random.PRNGKey(2003)
+            return jax.random.uniform(key=key, minval=min, maxval=max, shape=size)
+
+        if self._active_diff_lib == "autograd":
+            return self._numpy.random.uniform(size=size, min=min, max=max)
+
+    def randint(self, min: int, max: int, size: tuple[int, int]):
+        if self._active_diff_lib == "jax":
+            import jax
+
+            key = jax.random.PRNGKey(2004)
+            return jax.random.randint(key=key, minval=min, maxval=max, shape=size)
+
+        if self._active_diff_lib == "autograd":
+            return self._numpy.random.randint(low=min, high=max, size=size)
+
     def __getattr__(self, name: str) -> Any:
+        if name == "ndarray":
+            return DifferentiableNDArray
+
         bypass_list = {
             "dtype",
             "generic",
@@ -196,6 +242,11 @@ class DifferentiationProxy:
 
         if name in bypass_list:
             return getattr(real_np, name)
+
+        if name == "random" and self._active_diff_lib == "jax":
+            import jax
+
+            return jax.random
 
         return getattr(self._numpy, name)
 

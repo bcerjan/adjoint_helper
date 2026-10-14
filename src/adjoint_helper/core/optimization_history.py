@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, computed_field
 
-from adjoint_helper.core.defs import WeightsType
+from adjoint_helper.core.defs import RawWeightsType, WeightsType
 from adjoint_helper.utils.logging_utils import am_mpi_master
 
 from ..core.base_settings import OptimizationSettings, SimulationSettings
@@ -250,3 +250,15 @@ class OptimizationHistory(BaseModel):
 
     def optimize(self) -> list[WeightsType]:
         return self.optimization.optimize()
+
+    def extend_optimization(
+        self, new_biases: RawWeightsType, new_evals: list[int]
+    ) -> list[WeightsType]:
+
+        if len(new_biases) != len(new_evals):
+            raise ValueError("Must have same length of evals as biases")
+        self.optimization.sigmoid_biases = (
+            self.optimization.sigmoid_biases + new_biases.tolist()
+        )
+
+        self.optimization.max_evals.extend(new_evals)

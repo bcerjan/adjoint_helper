@@ -23,14 +23,20 @@ can be reused in other examples.
 """
 import logging
 
-from adjoint_helper import anp
+import numpy as real_np
 
 logger = logging.getLogger(__name__)
 
 
+def find_design_unit_size(
+    full_shape: tuple[int, int], target_cells: tuple[int, int] | None = None
+) -> tuple[int, int]:
+    return (1, 1)
+
+
 def digital_circle(
     x_size: int, y_size: int, rad: int
-) -> anp.ndarray[tuple[int, int], anp.dtype[anp.float64]]:
+) -> real_np.ndarray[tuple[int, int], real_np.dtype[real_np.float64]]:
     """Returns an array with ones everywhere except for a circular region
     in the middle where it is zero. Radius is specified in grid units."""
 
@@ -47,14 +53,50 @@ def digital_circle(
             "Design unit Y size is even so the center will be off by one pixel"
         )
 
-    out = anp.ones((x_size, y_size))
+    out = real_np.ones((x_size, y_size))
 
     x_cent = x_size // 2
     y_cent = y_size // 2
-    y, x = anp.ogrid[:x_size, :y_size]
+    y, x = real_np.ogrid[:x_size, :y_size]
 
     mask = (x - x_cent) ** 2 + (y - y_cent) ** 2 <= rad**2
 
     out[mask] = 0
+
+    return out
+
+
+def digital_rectangle(
+    x_size: int, y_size: int, x_edge: int, y_edge: int | None = None
+) -> real_np.ndarray[tuple[int, int], real_np.dtype[real_np.float64]]:
+    """Returns an array with ones everywhere except for a rectangular region
+    in the middle where it is zero. Dimensions are in grid units."""
+
+    if y_edge is None:
+        y_edge = x_edge
+
+    if x_edge > x_size or y_edge > y_size:
+        raise ValueError("Rectangle is bigger than the unit size!")
+
+    if x_size % 2 != 1:
+        logger.warning(
+            "Design unit X size is even so the center will be off by one pixel"
+        )
+
+    if y_size % 2 != 1:
+        logger.warning(
+            "Design unit Y size is even so the center will be off by one pixel"
+        )
+
+    out = real_np.ones((x_size, y_size))
+
+    x_cent = x_size // 2
+    y_cent = y_size // 2
+    x_start = x_cent - x_edge // 2
+    x_stop = x_cent + x_edge // 2
+    y_start = y_cent - y_edge // 2
+    y_stop = y_cent + y_edge // 2
+
+    out[x_start:x_stop, y_start:y_stop] = 0
 
     return out

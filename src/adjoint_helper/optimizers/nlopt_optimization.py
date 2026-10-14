@@ -191,7 +191,7 @@ class NloptOptimizationSettings(OptimizationSettings):
                 self._nlopt_objective_f
             )
 
-            for k, v in self.nlopt_params:
+            for k, v in self.nlopt_params.items():
                 solver.set_param(k, v)
 
             w_out = solver.optimize(weights)

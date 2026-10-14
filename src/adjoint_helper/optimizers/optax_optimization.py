@@ -18,6 +18,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["OptaxOptimizationSettings"]
 
+import logging
 from typing import Annotated, Any
 
 import numpy as real_np
@@ -36,6 +37,8 @@ from ..core.defs import (
     WeightsType,
 )
 from ..utils.util import save_fom_history, save_output
+
+logger = logging.getLogger(__name__)
 
 
 class OptaxOptimizationSettings(OptimizationSettings):
@@ -90,12 +93,15 @@ class OptaxOptimizationSettings(OptimizationSettings):
         obj = float(obj)
 
         if self.apply_connectivity:
+            logger.info(
+                f"Applying connectivity with bias: {self.sigmoid_bias}, threshold: {self.connectivity_sigmoid_threshold}, do_conn: {self.do_connectivity}"
+            )
             connectivity, g = self.simulation_settings.connectivity_constraint(
                 optimization=self
             )
 
             if connectivity > 0:
-                grad = anp.set(grad)[:].set(grad[:] + g[:] * self.connectivity_penalty)
+                grad = anp.at(grad)[:].set(grad[:] + g[:] * self.connectivity_penalty)
                 # grad[:] = grad[:] + g[:] * self.connectivity_penalty
                 obj += connectivity * self.connectivity_penalty
 
@@ -106,7 +112,7 @@ class OptaxOptimizationSettings(OptimizationSettings):
             )
 
             if fabrication > 0:
-                grad = anp.set(grad)[:].set(grad[:] + g[:] * self.linewidth_penalty)
+                grad = anp.at(grad)[:].set(grad[:] + g[:] * self.linewidth_penalty)
                 # grad[:] = grad[:] + g[:] * self.linewidth_penalty
                 obj += fabrication * self.linewidth_penalty
 

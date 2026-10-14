@@ -344,7 +344,7 @@ class DesignRegion(BaseModel):
         else:
             gradi = g2
 
-        optimization.connectivity.append(max)  # type: ignore
+        optimization.connectivity.append(float( max ))  # type: ignore
         return max, gradi.flatten()  # type: ignore
 
     def connectivity_constraint(
@@ -417,7 +417,7 @@ class DesignRegion(BaseModel):
 
         temp = self.backpropagate(gradient=aggGrad, optimization=optimization)
 
-        optimization.connectivity.append(f0)
+        optimization.connectivity.append(float(f0))
         return f0, temp.flatten()  # type: ignore
 
     def get_fingerprint(self) -> str:
@@ -591,7 +591,10 @@ class SimulationSettings(BaseModel, ABC):
     def calculate_normalization(self) -> None:
         if self.needs_baseline:
             val = self.normalization()
-            self.baseline_optimization_value = val
+            if isinstance(val, ( list, anp.ndarray, real_np.ndarray )):
+                self.baseline_optimization_value = [float(real_np.squeeze( v )) for v in val]
+            else:
+                self.baseline_optimization_value = float( real_np.squeeze( val ) )
             self.needs_baseline = False
 
     def get_empty_grads(self) -> list[list[list[RawWeightsType]]]:
@@ -878,6 +881,7 @@ class OptimizationSettings(BaseModel, ABC):
     _use_epsavg: bool = False
     _use_damping: bool = True
     use_smoothed_projection: bool = False
+    autoshutoff_level: float | None = None
 
     evals: int | None = Field(default=None, exclude=True, repr=False)
     optimizer: Any = Field(exclude=True, repr=False)
@@ -931,9 +935,9 @@ class OptimizationSettings(BaseModel, ABC):
     @computed_field
     @property
     def filter_radius(self) -> float:
-        return get_conic_radius_from_eta_e(  # type: ignore
+        return float( get_conic_radius_from_eta_e(  # type: ignore
             self.simulation_settings.minimum_feature_size, self.sigmoid_erosion
-        )
+        ) )
 
     @computed_field
     @property
@@ -1068,7 +1072,7 @@ def _(
         vec_out = anp.concatenate(grad_out)
 
         logger.info(
-            f"iteration: {len(optimization.data) + 1}, "
+            f"iteration: {len(optimization.weights) + 1}, "
             f"sigmoid_bias: {optimization.sigmoid_bias}, "
             f"obj. value: {obj_val}"
         )
