@@ -262,3 +262,7 @@ class OptimizationHistory(BaseModel):
         )
 
         self.optimization.max_evals.extend(new_evals)
+
+        self.save_to_json()
+
+        return self.optimize()
