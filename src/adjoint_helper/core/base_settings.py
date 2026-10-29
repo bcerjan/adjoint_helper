@@ -344,7 +344,7 @@ class DesignRegion(BaseModel):
         else:
             gradi = g2
 
-        optimization.connectivity.append(float( max ))  # type: ignore
+        optimization.connectivity.append(float(max))  # type: ignore
         return max, gradi.flatten()  # type: ignore
 
     def connectivity_constraint(
@@ -591,10 +591,15 @@ class SimulationSettings(BaseModel, ABC):
     def calculate_normalization(self) -> None:
         if self.needs_baseline:
             val = self.normalization()
-            if isinstance(val, ( list, anp.ndarray, real_np.ndarray )):
-                self.baseline_optimization_value = [float(real_np.squeeze( v )) for v in val]
+            if (
+                isinstance(val, (list, anp.ndarray, real_np.ndarray))
+                and real_np.ndim(val) > 0
+            ):
+                self.baseline_optimization_value = [
+                    float(real_np.squeeze(v)) for v in val
+                ]
             else:
-                self.baseline_optimization_value = float( real_np.squeeze( val ) )
+                self.baseline_optimization_value = float(real_np.squeeze(val))
             self.needs_baseline = False
 
     def get_empty_grads(self) -> list[list[list[RawWeightsType]]]:
@@ -935,9 +940,11 @@ class OptimizationSettings(BaseModel, ABC):
     @computed_field
     @property
     def filter_radius(self) -> float:
-        return float( get_conic_radius_from_eta_e(  # type: ignore
-            self.simulation_settings.minimum_feature_size, self.sigmoid_erosion
-        ) )
+        return float(
+            get_conic_radius_from_eta_e(  # type: ignore
+                self.simulation_settings.minimum_feature_size, self.sigmoid_erosion
+            )
+        )
 
     @computed_field
     @property

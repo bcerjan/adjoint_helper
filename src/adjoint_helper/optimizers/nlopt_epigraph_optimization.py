@@ -254,15 +254,10 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             gradient[:, 0] = -1  # gradient with respect to epigraph variable
             gradient[:, 1:] = real_np.asarray(grad)  # real gradients per-parameter
 
-        result[:] = float(anp.real(f0)) - epigraph
+        result[:] = real_np.real(real_np.asarray(f0)).reshape(-1) - epigraph
 
         obj: float = anp.linalg.norm(f0)  # type: ignore
         self.fom.append(float(anp.real(obj)))
-        self.weights.append(
-            self.simulation_settings.vector_to_arrays(real_np.asarray(weights.copy()))
-        )
-        self.data.append(epigraph)
-
         return float(obj)
 
     def _nlopt_epigraph_f(
@@ -273,6 +268,8 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
         if grad.size > 0 and grad is not None:
             grad[0] = 1
             grad[1:] = 0
+        self.weights.append(self.simulation_settings.weights)
+        self.data.append(t)
 
         return t
 
@@ -320,7 +317,7 @@ class NloptEpigraphOptimizationSettings(OptimizationSettings):
             biases[last_index + 1 :], start=last_index + 1
         ):
             self.sigmoid_bias = sigmoid_bias
-            solver = self.optimizer
+            solver = nlopt.opt(self.optimizer)
             solver.set_lower_bounds(lb)  # type: ignore
             solver.set_upper_bounds(ub)  # type: ignore
 
