@@ -25,9 +25,10 @@ dependencies = [
   "matplotlib",
   "autograd",
   "pydantic",
+  "scipy",
 ]
 
-[project.opional-dependencies]
+[project.optional-dependencies]
 
 optax = [
   "optax",
