@@ -30,13 +30,10 @@ from typing import Any, Self
 import fdtdx
 import jax
 import jax.numpy as jnp
-import matplotlib
-import pytreeclass as tc
-from fdtdx import colors
-
-matplotlib.use("tkAgg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pytreeclass as tc
+from fdtdx import colors
 from pydantic import computed_field, model_validator
 
 import adjoint_helper as ah
@@ -115,11 +112,6 @@ class SingleRegionExampleSettings(ah.SimulationSettings):
     @property
     def _wg_width(self) -> float:
         return self.wgWidth * self.units
-
-    @computed_field
-    @property
-    def _period(self) -> float:
-        return fdtdx.constants.wavelength_to_period(self.wavelength * self.units)
 
     @property
     def _df(self) -> fdtdx.WaveCharacter:
